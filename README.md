@@ -19,10 +19,37 @@ LIF（Leaky Integrate-and-Fire）脉冲神经网络，纯 CPU 环境下的 16×1
 |---|---|
 | M0 环境与数据 | 完成 |
 | M1 LIF 核心与前向 | 完成 |
-| M2 训练 | **完成（test 98.97%）** |
-| M3 推理引擎 | 未开始 |
+| M2 训练 | 完成（test 98.97%） |
+| M3 推理引擎 | **完成（0.136 ms / 57.7k 样本/s）** |
 | M4 校准与 API | 未开始 |
 | M5 基准报告 | 未开始 |
+
+## 推理引擎
+
+三级实现，全部与 PyTorch 逐样本一致（10000 条测试集 100% 相同预测）：
+
+| 引擎 | 测试精度 | 单样本 p50 | 批量吞吐 |
+|---|---|---|---|
+| **L1 Numba 稀疏**（默认） | 98.97% | **0.136 ms** | **57,738 样本/s** |
+| L1 Numba 稠密（对照） | 98.97% | 0.329 ms | 19,337 样本/s |
+| L0 NumPy 参考 | 98.97% | 0.987 ms | 1,492 样本/s |
+
+- 稠密摊销 842,496 MACs/样本，稀疏有效 183,039 SOP/样本，**理论削减 4.60×**
+- 同框架 dense→sparse **实测加速 2.42×**，差额来自 scatter 的访存开销，如实记录
+- 推理侧依赖仅 `numpy` + `numba`，无 PyTorch
+
+```python
+from freebird_lif.engine.export import load_bundle
+from freebird_lif.engine.numba_engine import NumbaEngine
+
+w, cfg = load_bundle("models/freebird-lif-T4.npz")
+eng = NumbaEngine(w, cfg)          # 首次调用触发 JIT 编译，约 3 s
+digit, conf = eng.forward(pixels)  # pixels: [B,1,16,16] float32 in [0,1]
+```
+
+复现基准：`python scripts/bench.py`（完整）或 `--quick`。结果落在 `benchmarks/engine.md`。
+
+**注意**：首次调用含 Numba JIT 编译（约 3 秒）。做延迟基准前必须先预热，否则测到的是编译时间。`bench.py` 已内置预热。
 
 ## 定稿配置与结果
 

@@ -62,10 +62,12 @@ def fold_conv_bn(conv: nn.Conv2d, bn: nn.BatchNorm2d) -> tuple[Tensor, Tensor]:
 
 
 def fold_linear_bn(linear: nn.Linear, bn: nn.BatchNorm1d) -> tuple[Tensor, Tensor]:
+    """把 BN 折进线性层。无偏置时按 b=0 处理（BN 前的偏置本就冗余）。"""
     std = torch.sqrt(bn.running_var + bn.eps)
     scale = bn.weight / std
     w = linear.weight * scale.reshape(-1, 1)
-    b = (linear.bias - bn.running_mean) * scale + bn.bias
+    bias = linear.bias if linear.bias is not None else torch.zeros_like(bn.running_mean)
+    b = (bias - bn.running_mean) * scale + bn.bias
     return w, b
 
 
