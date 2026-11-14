@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import numpy as np
 import torch
+import torch.nn.functional as F
 from torch import Tensor
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -69,3 +71,54 @@ def accuracy(model, x: Tensor, y: Tensor, batch: int = 512) -> float:
         correct += (logits.argmax(1) == y[i : i + batch]).sum().item()
     model.train(was_training)
     return correct / len(x)
+
+
+def random_affine(
+    x: Tensor,
+    max_shift: float = 2.0,
+    max_deg: float = 8.0,
+    generator: torch.Generator | None = None,
+) -> Tensor:
+    """批量随机仿射增强：平移 + 旋转，一次采样完成，零填充边界。
+
+    用 affine_grid/grid_sample 而非逐样本 PIL 变换——整批一次算子调用，
+    在 16×16 这个尺度上开销可忽略，且天然支持 GPU。
+    """
+    n = x.shape[0]
+    # 归一化坐标下图像跨度为 2，1 像素 = 2/16
+    unit = 2.0 / x.shape[-1]
+    tx = (torch.rand(n, generator=generator, device=x.device) * 2 - 1) * max_shift * unit
+    ty = (torch.rand(n, generator=generator, device=x.device) * 2 - 1) * max_shift * unit
+    ang = (torch.rand(n, generator=generator, device=x.device) * 2 - 1) * max_deg * math.pi / 180.0
+
+    cos, sin = torch.cos(ang), torch.sin(ang)
+    theta = torch.zeros(n, 2, 3, device=x.device, dtype=x.dtype)
+    theta[:, 0, 0] = cos
+    theta[:, 0, 1] = -sin
+    theta[:, 0, 2] = tx
+    theta[:, 1, 0] = sin
+    theta[:, 1, 1] = cos
+    theta[:, 1, 2] = ty
+
+    grid = F.affine_grid(theta, list(x.shape), align_corners=False)
+    return F.grid_sample(x, grid, align_corners=False, padding_mode="zeros")
+
+
+def random_brightness(x: Tensor, amount: float = 0.2, generator: torch.Generator | None = None) -> Tensor:
+    """逐样本亮度缩放，模拟笔画粗细/书写压力差异。"""
+    if amount <= 0:
+        return x
+    n = x.shape[0]
+    scale = 1.0 + (torch.rand(n, 1, 1, 1, generator=generator, device=x.device) * 2 - 1) * amount
+    return (x * scale).clamp_(0.0, 1.0)
+
+
+def augment_batch(
+    x: Tensor,
+    max_shift: float = 2.0,
+    max_deg: float = 8.0,
+    brightness: float = 0.2,
+    generator: torch.Generator | None = None,
+) -> Tensor:
+    x = random_affine(x, max_shift, max_deg, generator)
+    return random_brightness(x, brightness, generator)

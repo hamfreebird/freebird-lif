@@ -140,3 +140,52 @@ def test_random_shift_preserves_mass():
     assert out.sum() <= x.sum()
     # 中心 12×12 区域应始终被覆盖，不会被平移移出画面
     assert (out[:, :, 2:14, 2:14] > 0).all()
+
+
+def test_affine_identity_is_exact():
+    """零平移零旋转时，仿射采样必须逐像素还原原图。"""
+    import torch
+
+    from freebird_lif.data import random_affine
+
+    torch.manual_seed(0)
+    x = torch.rand(8, 1, 16, 16)
+    g = torch.Generator().manual_seed(1)
+    out = random_affine(x, max_shift=0.0, max_deg=0.0, generator=g)
+    assert torch.allclose(out, x, atol=1e-5)
+
+
+def test_augment_batch_keeps_range_and_shape():
+    import torch
+
+    from freebird_lif.data import augment_batch
+
+    torch.manual_seed(0)
+    x = torch.rand(16, 1, 16, 16)
+    g = torch.Generator().manual_seed(2)
+    out = augment_batch(x, 2.0, 8.0, 0.2, g)
+    assert out.shape == x.shape
+    assert out.min() >= 0.0 and out.max() <= 1.0
+    # 增强必须真的改变输入，否则训练期退化为无增强
+    assert not torch.allclose(out, x, atol=1e-3)
+
+
+def test_brightness_zero_amount_is_noop():
+    import torch
+
+    from freebird_lif.data import random_brightness
+
+    x = torch.rand(4, 1, 16, 16)
+    out = random_brightness(x, 0.0)
+    assert torch.equal(out, x)
+
+
+def test_augment_is_deterministic_given_generator():
+    import torch
+
+    from freebird_lif.data import augment_batch
+
+    x = torch.rand(8, 1, 16, 16)
+    a = augment_batch(x, 2.0, 8.0, 0.2, torch.Generator().manual_seed(5))
+    b = augment_batch(x, 2.0, 8.0, 0.2, torch.Generator().manual_seed(5))
+    assert torch.allclose(a, b)

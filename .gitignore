@@ -12,5 +12,8 @@ data/*
 benchmarks/*.csv
 benchmarks/*.json
 
+# 训练产物（检查点由 scripts/export.py 导出到 models/ 后入库）
+runs/
+
 # 工作区记忆（agent 本地笔记，不入库）
 .workbuddy/
