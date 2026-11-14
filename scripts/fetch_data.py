@@ -22,7 +22,8 @@ import urllib.request
 from pathlib import Path
 
 import numpy as np
-from PIL import Image
+
+from freebird_lif.data import to_16x16
 
 MIRRORS = [
     "https://ossci-datasets.s3.amazonaws.com/mnist",
@@ -77,36 +78,6 @@ def download(name: str, dest_dir: Path, force: bool = False) -> Path:
             print(f"  失败（{type(exc).__name__}: {exc}），尝试下一个镜像")
             last_err = exc
     raise RuntimeError(f"所有镜像均失败: {name}") from last_err
-
-
-def to_16x16(img: np.ndarray, size: int, content: int, bbox: bool) -> np.ndarray:
-    """单张 28×28 uint8 → size×size uint8。
-
-    bbox=True 时先裁掉空白边距，使数字内容占 content 像素（保留与原
-    MNIST 20/28≈71% 相近的边距比例），再用 BOX（面积平均）降采样，
-    避免双三次插值在细笔画上的振铃伪影。
-    """
-    if bbox:
-        ys, xs = np.nonzero(img)
-        if ys.size:
-            img = img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
-
-    h, w = img.shape
-    scale = content / max(h, w)
-    # 至少保留 1 像素，且不得超过 content（避免 round 误差越界）
-    new_h = min(content, max(1, int(round(h * scale))))
-    new_w = min(content, max(1, int(round(w * scale))))
-
-    resized = np.asarray(
-        Image.fromarray(img, mode="L").resize((new_w, new_h), Image.Resampling.BOX),
-        dtype=np.uint8,
-    )
-
-    canvas = np.zeros((size, size), dtype=np.uint8)
-    y0 = (size - new_h) // 2
-    x0 = (size - new_w) // 2
-    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
-    return canvas
 
 
 def build_split(images: np.ndarray, size: int, content: int, bbox: bool, tag: str) -> np.ndarray:

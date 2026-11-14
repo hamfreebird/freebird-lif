@@ -43,6 +43,32 @@ def split_train_val(
     return x[tr_idx], y[tr_idx], x[val_idx], y[val_idx]
 
 
+def to_16x16(img: np.ndarray, size: int = 16, content: int = 12, bbox: bool = True) -> np.ndarray:
+    """单张灰度图 → size×size uint8。
+
+    训练、CLI 与校准必须共用同一套预处理，否则训练/推理分布不一致。
+    流程：包围盒裁剪 → 等比例缩放至 content 内容区 → 居中补零。
+    降采样用面积平均（PIL BOX），避免双三次插值在细笔画上产生振铃伪影。
+    """
+    from PIL import Image as _Image
+
+    if bbox:
+        ys, xs = np.nonzero(img)
+        if ys.size:
+            img = img[ys.min() : ys.max() + 1, xs.min() : xs.max() + 1]
+    h, w = img.shape
+    scale = content / max(h, w)
+    new_h = min(content, max(1, int(round(h * scale))))
+    new_w = min(content, max(1, int(round(w * scale))))
+    resized = np.asarray(
+        _Image.fromarray(img.astype(np.uint8), mode="L").resize(
+            (new_w, new_h), _Image.Resampling.BOX), dtype=np.uint8)
+    canvas = np.zeros((size, size), dtype=np.uint8)
+    y0, x0 = (size - new_h) // 2, (size - new_w) // 2
+    canvas[y0 : y0 + new_h, x0 : x0 + new_w] = resized
+    return canvas
+
+
 def random_shift(x: Tensor, max_shift: int = 2, generator: torch.Generator | None = None) -> Tensor:
     """整批随机平移（零填充），模拟手写位置的随机性。
 

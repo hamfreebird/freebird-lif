@@ -21,8 +21,44 @@ LIF（Leaky Integrate-and-Fire）脉冲神经网络，纯 CPU 环境下的 16×1
 | M1 LIF 核心与前向 | 完成 |
 | M2 训练 | 完成（test 98.97%） |
 | M3 推理引擎 | **完成（0.136 ms / 57.7k 样本/s）** |
-| M4 校准与 API | 未开始 |
+| M4 校准与 API | **完成（ECE 0.0016）** |
 | M5 基准报告 | 未开始 |
+
+## 用法
+
+```python
+from freebird_lif.api import Predictor
+
+p = Predictor("models/freebird-lif-T4.npz", calibration="models/calibration.json")
+
+digit, conf = p.predict_one(pixels)        # pixels: [16,16]，uint8[0,255] 或 float[0,1]
+print(digit, conf)                          # 7 0.9996
+
+digits, confs = p.predict(batch)            # batch: [B,16,16] / [B,256] / [B,1,16,16]
+p.explain(pixels, top_k=3)                  # 前 3 个候选
+```
+
+输入形状与值域自动规范化：接受 `[16,16]`、`[256]`、`[B,16,16]`、`[B,256]`、`[B,1,16,16]`，`uint8` 与 `float` 两种值域；float 若最大值 > 1 自动按 255 归一化。
+
+命令行：
+
+```bash
+python -m freebird_lif.cli predict digit.png        # 自动识别白底黑字并反色
+python -m freebird_lif.cli predict digit.npy --top 3
+python -m freebird_lif.cli eval --n 10000
+```
+
+## 置信度
+
+模型**本身已高度校准**，温度缩放几乎不改变结果：`T_cal = 0.9958`，测试集 ECE 0.0021 → 0.0016（变化在噪声内）。这意味着可以直接信任 `max softmax` 作为置信度。
+
+| τ | 覆盖率 | 覆盖内精度 |
+|---|---|---|
+| 0.000 | 100.0% | 98.68% |
+| 0.799 | 98.1% | 99.45% |
+| 0.899 | 96.9% | 99.77% |
+
+目标精度 99.5% 时建议 `τ = 0.824`。复现：`python scripts/calibrate.py`
 
 ## 推理引擎
 
