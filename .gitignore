@@ -1,0 +1,13 @@
+.venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# 派生数据：由 scripts/fetch_data.py 生成，不入库
+data/*
+!data/.gitkeep
+
+# 基准输出与图表
+benchmarks/*.csv
+benchmarks/*.json

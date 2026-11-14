@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=78"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "freebird-lif"
+version = "0.1.0"
+description = "LIF 脉冲神经网络：16×16 手写数字识别，CPU 高效推理"
+requires-python = ">=3.12"
+
+# 推理侧依赖：刻意保持极简，不含 torch
+dependencies = [
+    "numpy==2.5.4",
+    "numba==0.68.1",
+]
+
+[project.optional-dependencies]
+# 训练与数据准备。torch 须从 CPU 源安装（见 README）
+train = [
+    "torch==2.15.0",
+    "pillow==13.0.0",
+]
+dev = [
+    "pytest==9.2.0",
+]
+
+[project.scripts]
+freebird-lif = "freebird_lif.cli:main"
+
+[tool.setuptools]
+packages = ["freebird_lif", "freebird_lif.engine"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra"
+filterwarnings = ["ignore::DeprecationWarning"]
