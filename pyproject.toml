@@ -24,9 +24,6 @@ dev = [
     "pytest==9.2.0",
 ]
 
-[project.scripts]
-freebird-lif = "freebird_lif.cli:main"
-
 [tool.setuptools]
 packages = ["freebird_lif", "freebird_lif.engine"]
 

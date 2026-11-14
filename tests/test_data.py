@@ -90,3 +90,53 @@ def test_manifest_matches(cache):
     assert manifest["train_shape"] == list(x_tr.shape)
     assert manifest["test_shape"] == list(x_te.shape)
     assert len(manifest["source_sha256"]) == 4
+
+
+# ---- 划分与归一化（不依赖磁盘缓存） ---------------------------------------
+
+
+def test_train_val_split_is_disjoint():
+    """验证集必须来自训练集的互斥子集，且官方测试集完全不参与划分。"""
+    import torch
+
+    from freebird_lif.data import split_train_val
+
+    x = torch.arange(2000).float().reshape(2000, 1)
+    y = torch.arange(2000)
+    xt, yt, xv, yv = split_train_val(x, y, 500, seed=7)
+    assert len(xt) == 1500 and len(xv) == 500
+    tr, va = set(xt.flatten().tolist()), set(xv.flatten().tolist())
+    assert tr.isdisjoint(va), "训练集与验证集存在重叠"
+    assert len(tr | va) == 2000
+    # 样本与标签必须成对迁移：构造时 x[i] == y[i]，划分后仍应逐个对应
+    assert torch.equal(xt.flatten().long(), yt)
+    assert torch.equal(xv.flatten().long(), yv)
+
+
+def test_to_tensor_normalizes_to_unit_range():
+    import numpy as np
+
+    from freebird_lif.data import to_tensor
+
+    arr = np.array([[0, 128, 255] * 86], dtype=np.uint8)[:, :256]
+    t = to_tensor(arr)
+    assert t.shape == (1, 1, 16, 16)
+    assert t.min() >= 0.0 and t.max() <= 1.0
+    assert t.max() == pytest.approx(1.0)
+    assert t.min() == pytest.approx(0.0)
+
+
+def test_random_shift_preserves_mass():
+    """平移只重排像素，不应改变总量；边缘外移部分会因零填充而丢失。"""
+    import torch
+
+    from freebird_lif.data import random_shift
+
+    x = torch.ones(64, 1, 16, 16)
+    g = torch.Generator().manual_seed(0)
+    out = random_shift(x, max_shift=2, generator=g)
+    assert out.shape == x.shape
+    assert out.max() <= 1.0
+    assert out.sum() <= x.sum()
+    # 中心 12×12 区域应始终被覆盖，不会被平移移出画面
+    assert (out[:, :, 2:14, 2:14] > 0).all()

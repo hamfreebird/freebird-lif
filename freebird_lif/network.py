@@ -34,7 +34,7 @@ class SNNConfig:
     surrogate: str = "fast_sigmoid"
     reset: str = "hard"
     method: str = "euler"
-    pool_on: str = "spike"  # "spike" | "membrane"
+    pool_on: str = "membrane"  # "spike" | "membrane"
     n_conv1: int = 12
     n_conv2: int = 24
     n_fc: int = 96
@@ -107,21 +107,43 @@ class ConvSNN(nn.Module):
             h = F.max_pool2d(h, 2)
         return h
 
-    def _step(self, h1: Tensor, u1, u2, u3, u4, r1, r2, r3):
-        s1, u1, r1 = self.lif1(h1, u1, r1)
-        if self.cfg.pool_on == "spike":
-            s1 = F.max_pool2d(s1, 2)
+    def _step(self, h1: Tensor, state):
+        """单步推进。返回 (logits, (s1,s2,s3), (u1..u4), (r1,r2,r3))。
 
-        h2 = self.bn2(self.conv2(s1))
+        分组返回是为了让调用方按需取用：forward 只要 logits 与状态，
+        诊断接口只要脉冲张量。
+        """
+        u1, u2, u3, u4 = state[0]
+        r1, r2, r3 = state[1]
+
+        s1, u1, r1 = self.lif1(h1, u1, r1)
+        sp1 = F.max_pool2d(s1, 2) if self.cfg.pool_on == "spike" else s1
+
+        h2 = self.bn2(self.conv2(sp1))
         if self.cfg.pool_on == "membrane":
             h2 = F.max_pool2d(h2, 2)
         s2, u2, r2 = self.lif2(h2, u2, r2)
-        if self.cfg.pool_on == "spike":
-            s2 = F.max_pool2d(s2, 2)
+        sp2 = F.max_pool2d(s2, 2) if self.cfg.pool_on == "spike" else s2
 
-        s3, u3, r3 = self.lif3(self.bn3(self.fc1(s2.flatten(1))), u3, r3)
+        s3, u3, r3 = self.lif3(self.bn3(self.fc1(sp2.flatten(1))), u3, r3)
         out, u4, _ = self.lif4(self.fc2(s3), u4, None)
-        return out, u1, u2, u3, u4, r1, r2, r3
+        return out, (s1, s2, s3), ((u1, u2, u3, u4), (r1, r2, r3))
+
+    def init_states(self, B: int, device=None, dtype=None):
+        """初始化 T 步展开所需的全部膜电位。
+
+        池化位置决定各级 LIF 的工作分辨率：
+            spike    —— 池化在脉冲之后，LIF1 吃 16×16，LIF2 吃 8×8
+            membrane —— 池化在 LIF 之前，LIF1 吃 8×8，LIF2 吃 4×4
+        """
+        membrane = self.cfg.pool_on == "membrane"
+        d1 = 8 if membrane else 16
+        d2 = 4 if membrane else 8
+        u1, r1 = self.lif1.init_state(B, self.cfg.n_conv1, d1, d1, device=device, dtype=dtype)
+        u2, r2 = self.lif2.init_state(B, self.cfg.n_conv2, d2, d2, device=device, dtype=dtype)
+        u3, r3 = self.lif3.init_state(B, self.cfg.n_fc, device=device, dtype=dtype)
+        u4, _ = self.lif4.init_state(B, self.cfg.n_class, device=device, dtype=dtype)
+        return (u1, u2, u3, u4), (r1, r2, r3)
 
     def forward(self, x: Tensor, T: int | None = None, spikes: Tensor | None = None):
         """x: [B,1,16,16] 或 [B,256]；spikes: [T,B,1,16,16] 时走脉冲输入通路。
@@ -132,25 +154,14 @@ class ConvSNN(nn.Module):
             x = x.reshape(-1, 1, 16, 16)
         T = T or self.cfg.T
         B = x.shape[0]
-        dev, dt = x.device, x.dtype
-
-        # 池化位置决定各级 LIF 的工作分辨率：
-        #   spike   —— 池化在脉冲之后，LIF1 吃 16×16，LIF2 吃 8×8
-        #   membrane—— 池化在 LIF 之前，LIF1 吃 8×8，LIF2 吃 4×4
-        membrane = self.cfg.pool_on == "membrane"
-        d1 = 8 if membrane else 16
-        d2 = 4 if membrane else 8
-        u1, r1 = self.lif1.init_state(B, self.cfg.n_conv1, d1, d1, device=dev, dtype=dt)
-        u2, r2 = self.lif2.init_state(B, self.cfg.n_conv2, d2, d2, device=dev, dtype=dt)
-        u3, r3 = self.lif3.init_state(B, self.cfg.n_fc, device=dev, dtype=dt)
-        u4, _ = self.lif4.init_state(B, self.cfg.n_class, device=dev, dtype=dt)
+        state = self.init_states(B, device=x.device, dtype=x.dtype)
 
         traces: list[Tensor] = []
         if spikes is None:
-            # 电流注入：Conv1 与 t 无关，只算一次
+            # 电流注入：Conv1(+BN,+池化) 与 t 无关，只算一次
             h1 = self._conv_front(x * self.cfg.input_gain)
             for _ in range(T):
-                out, u1, u2, u3, u4, r1, r2, r3 = self._step(h1, u1, u2, u3, u4, r1, r2, r3)
+                out, _, state = self._step(h1, state)
                 traces.append(out)
         else:
             if spikes.shape[0] != T:
@@ -159,11 +170,26 @@ class ConvSNN(nn.Module):
                 st = spikes[t]
                 if st.dim() == 2:
                     st = st.reshape(-1, 1, 16, 16)
-                h1 = self._conv_front(st)
-                out, u1, u2, u3, u4, r1, r2, r3 = self._step(h1, u1, u2, u3, u4, r1, r2, r3)
+                out, _, state = self._step(self._conv_front(st), state)
                 traces.append(out)
 
-        return u4, traces
+        return state[0][3], traces
+
+    @torch.no_grad()
+    def spike_rates(self, x: Tensor, T: int | None = None) -> dict[str, float]:
+        """各 LIF 层的时间平均发放率。稀疏内核的收益直接由这组数字决定。"""
+        if x.dim() == 2:
+            x = x.reshape(-1, 1, 16, 16)
+        T = T or self.cfg.T
+        state = self.init_states(x.shape[0], device=x.device, dtype=x.dtype)
+        h1 = self._conv_front(x * self.cfg.input_gain)
+        acc = {"lif1": 0.0, "lif2": 0.0, "lif3": 0.0}
+        for _ in range(T):
+            _, (s1, s2, s3), state = self._step(h1, state)
+            acc["lif1"] += s1.mean().item() / T
+            acc["lif2"] += s2.mean().item() / T
+            acc["lif3"] += s3.mean().item() / T
+        return acc
 
     # ---- 统计 -------------------------------------------------------------
 

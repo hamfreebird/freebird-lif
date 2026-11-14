@@ -112,16 +112,10 @@ def test_fold_preserves_zero_input(model):
 
 def _naive_forward(m: ConvSNN, x: torch.Tensor, T: int):
     """每步重算 Conv1 的参考实现，用于验证缓存不改变结果。"""
-    B = x.shape[0]
-    c = m.cfg
-    u1, r1 = m.lif1.init_state(B, c.n_conv1, 16, 16)
-    u2, r2 = m.lif2.init_state(B, c.n_conv2, 8, 8)
-    u3, r3 = m.lif3.init_state(B, c.n_fc)
-    u4, _ = m.lif4.init_state(B, c.n_class)
+    state = m.init_states(x.shape[0], device=x.device, dtype=x.dtype)
     out = None
     for _ in range(T):
-        h1 = m._conv_front(x * c.input_gain)
-        out, u1, u2, u3, u4, r1, r2, r3 = m._step(h1, u1, u2, u3, u4, r1, r2, r3)
+        out, _, state = m._step(m._conv_front(x * m.cfg.input_gain), state)
     return out
 
 
@@ -163,24 +157,8 @@ def test_spikes_are_not_degenerate():
     torch.manual_seed(0)
     m = ConvSNN(SNNConfig(T=8))
     m.train()
-    x = torch.rand(32, 1, 16, 16)
-    Bn = x.shape[0]
-    u1, r1 = m.lif1.init_state(Bn, 12, 16, 16)
-    u2, r2 = m.lif2.init_state(Bn, 24, 8, 8)
-    u3, r3 = m.lif3.init_state(Bn, 96)
-    h1 = m._conv_front(x)
-    acc = {"lif1": 0.0, "lif2": 0.0, "lif3": 0.0}
-    for _ in range(8):
-        s1, u1, r1 = m.lif1(h1, u1, r1)
-        sp1 = F.max_pool2d(s1, 2)
-        s2, u2, r2 = m.lif2(m.bn2(m.conv2(sp1)), u2, r2)
-        sp2 = F.max_pool2d(s2, 2)
-        s3, u3, r3 = m.lif3(m.bn3(m.fc1(sp2.flatten(1))), u3, r3)
-        acc["lif1"] += s1.mean().item() / 8
-        acc["lif2"] += s2.mean().item() / 8
-        acc["lif3"] += s3.mean().item() / 8
-
-    for name, rate in acc.items():
+    rates = m.spike_rates(torch.rand(32, 1, 16, 16))
+    for name, rate in rates.items():
         assert 0.005 < rate < 0.6, f"{name} 发放率 {rate:.4f} 退化"
 
 
@@ -193,9 +171,8 @@ def test_eval_mode_before_training_is_silent():
     torch.manual_seed(0)
     m = ConvSNN(SNNConfig(T=8))
     m.eval()
-    u, ref = m.lif1.init_state(B, m.cfg.n_conv1, 16, 16)
-    s, _, _ = m.lif1(m._conv_front(torch.rand(B, 1, 16, 16)), u, ref)
-    assert s.mean().item() == 0.0
+    rates = m.spike_rates(torch.rand(B, 1, 16, 16))
+    assert all(r == 0.0 for r in rates.values()), f"eval 下意外发放: {rates}"
 
 
 def test_confidence_sums_to_one(model, batch):
@@ -205,6 +182,18 @@ def test_confidence_sums_to_one(model, batch):
     assert (conf > 0).all() and (conf <= 1).all()
     prob = torch.softmax(logits, dim=-1)
     assert torch.allclose(prob.sum(dim=-1), torch.ones(B), atol=1e-5)
+
+
+def test_spike_rates_api(model, batch):
+    """诊断接口：三层齐全、取值在 [0,1]、且不改变模型状态。"""
+    rates = model.spike_rates(batch)
+    assert set(rates) == {"lif1", "lif2", "lif3"}
+    for v in rates.values():
+        assert 0.0 <= v <= 1.0
+    # no_grad 调用不应污染 running stats
+    before = model.bn1.running_mean.clone()
+    model.spike_rates(batch)
+    assert torch.equal(before, model.bn1.running_mean)
 
 
 def test_gradients_finite(model, batch):
