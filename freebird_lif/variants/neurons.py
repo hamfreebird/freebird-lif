@@ -18,12 +18,34 @@ from torch import Tensor, nn
 from .base import SpikingNeuron, decay_from_tau
 
 
-def _alpha_param(a0: float, n: int, learn: bool) -> nn.Parameter:
-    """用 logit 参数化保证 α ∈ (0,1)；不可学习时也保留 Parameter 以便统一 .to(device)。"""
-    if not learn:
-        return nn.Parameter(torch.full((n,), float(a0)), requires_grad=False)
-    raw = math.log(a0 / (1 - a0))
-    return nn.Parameter(torch.full((n,), raw))
+def _decay_of(tau_ms, dt_ms: float):
+    """τ（标量或每神经元数组，单位 ms）→ α = exp(-dt/τ)。"""
+    t = torch.as_tensor(tau_ms, dtype=torch.float32)
+    if t.dim() == 0:
+        return float(decay_from_tau(float(t), dt_ms))
+    return torch.exp(-dt_ms / t.clamp_min(1e-3))
+
+
+def _alpha_param(a0, n: int, learn: bool) -> nn.Parameter:
+    """用 logit 参数化保证 α ∈ (0,1)；不可学习时也保留 Parameter 以便统一 .to(device)。
+
+    a0 可以是标量（全体同 τ）或长度 n 的数组（异构 τ）。异构初始化是本阶段的
+    重点实验：同一层内从快到慢铺开一组时间常数，等价于一个可学的滤波器组，
+    比全体共享一个 τ 有更强的时间特征表达力。
+    """
+    a = torch.as_tensor(a0, dtype=torch.float32).reshape(-1)
+    if a.numel() == 1:
+        a = a.repeat(n)
+    if a.numel() != n:
+        raise ValueError(f"α 初始化长度 {a.numel()} 与神经元数 {n} 不符")
+    a = a.clamp(1e-4, 1.0 - 1e-4)
+    # 两种模式都存 **logit**，因为 `decay` 属性统一对 alpha_u 做 sigmoid。
+    # 早期版本在 learn=False 时直接存 α 本身，导致 decay 返回 sigmoid(α)——
+    # τ=2 帧的衰减变成 sigmoid(0.6065)=0.6471（等效 τ≈2.3 帧）。
+    # 这是静默偏差：不影响 learn=True 的训练（M2 全部走这条路径），
+    # 但会让任何"固定 τ"的对照实验悄悄偏离声明值。
+    raw = torch.log(a / (1.0 - a))
+    return nn.Parameter(raw.clone(), requires_grad=learn)
 
 
 class LIF(SpikingNeuron):
@@ -43,10 +65,10 @@ class LIF(SpikingNeuron):
 
     n_state = 2
 
-    def __init__(self, n: int, tau_ms: float = 2.0, dt_ms: float = 1.0,
+    def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  learn_tau: bool = False, **kw):
         super().__init__(**kw)
-        self.alpha_u = _alpha_param(decay_from_tau(tau_ms, dt_ms), n, learn_tau)
+        self.alpha_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
 
     @property
     def decay(self) -> Tensor:
@@ -81,11 +103,11 @@ class ALIF(SpikingNeuron):
 
     n_state = 3  # (u, b, s_prev)
 
-    def __init__(self, n: int, tau_ms: float = 2.0, dt_ms: float = 1.0,
+    def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  tau_b_ms: float = 10.0, beta: float = 0.5,
                  learn_tau: bool = False, learn_beta: bool = True, **kw):
         super().__init__(**kw)
-        self.alpha_u = _alpha_param(decay_from_tau(tau_ms, dt_ms), n, learn_tau)
+        self.alpha_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
         self.rho = float(decay_from_tau(tau_b_ms, dt_ms))
         self.beta_b = nn.Parameter(torch.full((n,), float(beta)), requires_grad=learn_beta)
 
@@ -123,12 +145,12 @@ class AdLIF(SpikingNeuron):
 
     n_state = 3  # (u, w, s_prev)
 
-    def __init__(self, n: int, tau_ms: float = 2.0, tau_w_ms: float = 10.0,
+    def __init__(self, n: int, tau_ms=2.0, tau_w_ms=10.0,
                  dt_ms: float = 1.0, a0: float = 0.0, b0: float = 0.0,
                  learn_tau: bool = True, **kw):
         super().__init__(**kw)
-        self.alpha_u = _alpha_param(decay_from_tau(tau_ms, dt_ms), n, learn_tau)
-        self.beta_w = _alpha_param(decay_from_tau(tau_w_ms, dt_ms), n, learn_tau)
+        self.alpha_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
+        self.beta_w = _alpha_param(_decay_of(tau_w_ms, dt_ms), n, learn_tau)
         self.a = nn.Parameter(torch.full((n,), float(a0)))
         self.b = nn.Parameter(torch.full((n,), float(b0)))
 
@@ -168,10 +190,10 @@ class GLIF(SpikingNeuron):
 
     n_state = 3  # (u, s_prev, gt[n])
 
-    def __init__(self, n: int, tau_ms: float = 2.0, dt_ms: float = 1.0,
+    def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  learn_tau: bool = True, **kw):
         super().__init__(**kw)
-        self.alpha_u = _alpha_param(decay_from_tau(tau_ms, dt_ms), n, learn_tau)
+        self.alpha_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
         self.g_leak = nn.Parameter(torch.zeros(n))
         self.g_in = nn.Parameter(torch.zeros(n))
         self.g_reset = nn.Parameter(torch.zeros(n))
@@ -215,14 +237,14 @@ class MCLIF(SpikingNeuron):
     退化性：K=1 且 α_1=1 时 d[t]=x[t]，严格退化为 LIF（单元测试据此校验）。
     """
 
-    def __init__(self, n: int, n_branch: int = 2, tau_ms: float = 2.0,
+    def __init__(self, n: int, n_branch: int = 2, tau_ms=2.0,
                  tau_d_range_ms: tuple[float, float] = (1.0, 20.0),
                  dt_ms: float = 1.0, learn_tau: bool = True, **kw):
         super().__init__(**kw)
         self.K = int(n_branch)
         # n_state 计的是 init_state 返回的张量个数：膜电位 + 叠在一起的 K 个树突 + 上一步脉冲
         self.n_state = 3
-        self.beta_u = _alpha_param(decay_from_tau(tau_ms, dt_ms), n, learn_tau)
+        self.beta_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
 
         lo, hi = tau_d_range_ms
         taus = torch.logspace(math.log10(lo), math.log10(hi), self.K)

@@ -133,13 +133,18 @@ def build(root: Path | None = None, T: int = 100, binary: bool = True,
     cache = root / f"binned_T{T}_{'bin' if binary else 'cnt'}.npz"
     if cache.exists() and not force:
         z = np.load(cache, allow_pickle=False)
-        return {
+        out = {
             "x_train": z["x_train"], "y_train": z["y_train"],
             "x_val": z["x_val"], "y_val": z["y_val"],
             "x_test": z["x_test"], "y_test": z["y_test"],
             "meta": {"T": T, "duration": float(z["duration"]), "binary": binary,
                      "val_size": val_size, "val_seed": val_seed},
         }
+        # 说话人标签用于按说话人留出验证（SHD 测试集 81% 来自未见说话人）
+        for k in ("speaker_train", "speaker_val", "speaker_test"):
+            if k in z.files:
+                out[k] = z[k]
+        return out
 
     paths = download(root, force=force)
     raw = {s: read_h5(p) for s, p in paths.items()}
@@ -153,17 +158,17 @@ def build(root: Path | None = None, T: int = 100, binary: bool = True,
     print(f"  统一下时长 = {duration:.2f} s，T = {T}，每帧 {duration / T * 1000:.1f} ms")
 
     def conv(split: str):
-        times, units, labels, _speaker = raw[split]
+        times, units, labels, speaker = raw[split]
         n = len(labels)
         x = np.empty((n, T, N_CHANNELS), dtype=np.uint8)
         for i in range(n):
             x[i] = bin_one(times[i], units[i], T, duration, binary=binary)
             if (i + 1) % 2000 == 0:
                 print(f"    {split} {i + 1}/{n}")
-        return x, labels
+        return x, labels, speaker
 
-    x_tr_all, y_tr_all = conv("train")
-    x_te, y_te = conv("test")
+    x_tr_all, y_tr_all, spk_tr_all = conv("train")
+    x_te, y_te, spk_te = conv("test")
 
     g = np.random.default_rng(val_seed)
     perm = g.permutation(len(x_tr_all))
@@ -172,6 +177,8 @@ def build(root: Path | None = None, T: int = 100, binary: bool = True,
         "x_train": x_tr_all[tr_idx], "y_train": y_tr_all[tr_idx],
         "x_val": x_tr_all[val_idx], "y_val": y_tr_all[val_idx],
         "x_test": x_te, "y_test": y_te,
+        "speaker_train": spk_tr_all[tr_idx], "speaker_val": spk_tr_all[val_idx],
+        "speaker_test": spk_te,
         "meta": {"T": T, "duration": duration, "binary": binary,
                  "val_size": val_size, "val_seed": val_seed},
     }

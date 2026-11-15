@@ -215,3 +215,36 @@ def test_unknown_variant_rejected():
 def test_reset_mode_validation():
     with pytest.raises(ValueError):
         LIF(N, reset="bogus")
+
+
+def test_heterogeneous_tau_init():
+    """层内异构时间常数：τ 数组必须逐一还原，且解码后的衰减与解析值一致。
+
+    这是 M2 里性价比最高的单点改动（+6.5 点），所以初始化必须可验证——
+    如果 τ 只是被当成同一个标量广播下去，实验结论就是假的。
+    """
+    taus = [1.0, 2.0, 5.0, 20.0]
+    n = LIF(len(taus), tau_ms=taus, dt_ms=1.0, learn_tau=False)
+    got = -1.0 / torch.log(n.decay)
+    assert torch.allclose(got, torch.tensor(taus), rtol=1e-4), got
+
+
+def test_heterogeneous_tau_learnable_is_finite():
+    n = LIF(8, tau_ms=[1.0, 3.0] * 4, dt_ms=1.0, learn_tau=True)
+    x = torch.randn(2, 8) * 0.5
+    st = n.init_state(2, 8)
+    s, st = n.step(x, st)
+    s.sum().backward()
+    assert n.alpha_u.grad is not None
+    assert torch.isfinite(n.alpha_u.grad).all(), "异构 τ 的梯度出现非有限值"
+
+
+def test_tau_length_mismatch_rejected():
+    with pytest.raises(ValueError):
+        LIF(8, tau_ms=[1.0, 2.0], learn_tau=False)
+
+
+def test_scalar_tau_still_uniform():
+    """标量路径不能因为支持数组而退化。"""
+    n = LIF(6, tau_ms=2.0, dt_ms=1.0, learn_tau=False)
+    assert n.alpha_u.unique().numel() == 1

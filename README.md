@@ -5,9 +5,23 @@ LIF 脉冲神经网络研究项目。当前处于**第二阶段**。
 | 阶段 | 主题 | 状态 |
 |---|---|---|
 | v1 | MNIST 16×16，CPU 高效推理（98.97%，0.118 ms/样本） | 完成，已归档 |
-| v2 | LIF 变体在 SHD 上的对比 + Arc GPU 训练 | 计划已定，M0 进行中 |
+| v2 | LIF 变体在 SHD 上的对比 + Arc GPU 训练 | M0/M1/M2 完成，M3 待启动 |
 
 完整方案见 [PLAN.md](PLAN.md)。第一阶段的技术基准与数据见 [docs/PLAN-v1-lif-mnist.md](docs/PLAN-v1-lif-mnist.md)，说明见 [docs/README-v1.md](docs/README-v1.md)。
+
+## 当前进展（v2）
+
+| 里程碑 | 状态 |
+|---|---|
+| M0 XPU 环境 + SHD 管线 | 完成（Arc A750，`torch.xpu` 可用） |
+| M1 五个神经元变体 + 单元测试 | 完成（5/6，POLARA 因原文不可得而阻塞） |
+| M2 LIF 基线调优 | **完成：test 83.04 ± 0.63%（3 seed）** |
+
+基线配方：700 → 384 → 384 → 20 前馈，无归一化，层内异构时间常数（1→40 帧），
+训练期频道平移 ±35，120 epoch。从 M0 冒烟的 53.5% 提升 29.5 个百分点。
+详见 [benchmarks/shd_baseline.md](benchmarks/shd_baseline.md)。
+
+`python scripts/train_shd.py --grid r10 --seeds 0 1 2` 可复现。
 
 ## 归档
 
