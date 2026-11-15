@@ -17,3 +17,6 @@ runs/
 
 # 工作区记忆（agent 本地笔记，不入库）
 .workbuddy/
+
+# SHD 原始数据与分箱缓存（可由 scripts/fetch_shd.py 重建）
+data/shd/
