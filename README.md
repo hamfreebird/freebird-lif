@@ -22,7 +22,9 @@ LIF（Leaky Integrate-and-Fire）脉冲神经网络，纯 CPU 环境下的 16×1
 | M2 训练 | 完成（test 98.97%） |
 | M3 推理引擎 | **完成（0.136 ms / 57.7k 样本/s）** |
 | M4 校准与 API | **完成（ECE 0.0016）** |
-| M5 基准报告 | 未开始 |
+| M5 基准报告 | **完成** |
+
+完整实测数据与全部对照实验见 [benchmarks/report.md](benchmarks/report.md)。
 
 ## 用法
 
@@ -97,7 +99,6 @@ digit, conf = eng.forward(pixels)  # pixels: [B,1,16,16] float32 in [0,1]
 | 摊销 MACs/样本 | 842,496 |
 | 训练用时 | 319 s（12 核 CPU，45 epoch） |
 | 模型文件 | `models/freebird-lif-T4.pt` |
-
 训练：`python -m freebird_lif.train --epochs 45 --T 4 --name final_T4`
 
 ## 三项需要实测才能确定的超参
