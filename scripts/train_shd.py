@@ -77,6 +77,7 @@ class Cfg:
     aug_drop: float = 0.0      # 输入脉冲随机丢弃比例
     rate_target: float = 0.0   # 发放率正则的目标（0 表示关闭）
     rate_lambda: float = 0.0   # 发放率正则权重
+    save_weights: bool = False # 训练结束保存 state_dict 到 runs/
     learn_a: bool = True       # AdLIF：膜电位驱动的适应电流是否可学
     learn_b: bool = True       # AdLIF：发放驱动的适应电流是否可学
     label_smooth: float = 0.0
@@ -386,6 +387,13 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
     xb = torch.from_numpy(np.ascontiguousarray(xn[:512])).float().to(dev)
     rates = model.spike_rates(xb)
     te_pred = predict(model, d["x_test"])
+    if cfg.save_weights:
+        # 只存 state_dict，不存优化器状态：前者约 1.7 MB，后者会再翻两倍。
+        # 配置随权重一起存，避免"有权重但不知道是什么配方"。
+        wdir = ROOT / "runs"
+        wdir.mkdir(exist_ok=True)
+        torch.save({"config": asdict(cfg), "state_dict": model.state_dict(),
+                    "test_pred": te_pred}, wdir / f"{cfg.tag}_s{cfg.seed}.pt")
     r = {
         **asdict(cfg),
         "val": evaluate(model, xv, yv) if xv is not None else float("nan"),
@@ -575,6 +583,17 @@ GRIDS: dict[str, list[Cfg]] = {
             norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
             aug_chan=35, hidden=384, recurrent=True, rec_gain=0.5,
             rate_target=0.12, rate_lambda=2.0),
+    ],
+    # 归档用：重跑两个定稿模型并存权重。训练是逐位可复现的（实测 AdLIF
+    # 同 seed 重跑得 85.29%，与首次完全一致），所以这里的角色是"补出实体产物"，
+    # 不是重新选型。期望值与 M3/r10 一模一样。
+    "final_w": [
+        Cfg(tag="lif_w", variant="lif", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, save_weights=True),
+        Cfg(tag="adlif_w", variant="adlif", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, save_weights=True),
     ],
     "r2": [
         Cfg(tag="thr100", thr=1.0),
