@@ -14,6 +14,8 @@ benchmarks/*.csv
 benchmarks/*.json
 !benchmarks/train_shd_m3.json
 !benchmarks/m3_summary.json
+!benchmarks/train_shd_m3b.json
+!benchmarks/train_shd_m4b.json
 
 # 训练产物（检查点由 scripts/export.py 导出到 models/ 后入库）
 runs/

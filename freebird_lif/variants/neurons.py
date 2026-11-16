@@ -152,12 +152,19 @@ class AdLIF(SpikingNeuron):
 
     def __init__(self, n: int, tau_ms=2.0, tau_w_ms=10.0,
                  dt_ms: float = 1.0, a0: float = 0.0, b0: float = 0.0,
-                 learn_tau: bool = True, **kw):
+                 learn_tau: bool = True, learn_a: bool = True,
+                 learn_b: bool = True, **kw):
         super().__init__(**kw)
         self.alpha_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
         self.beta_w = _alpha_param(_decay_of(tau_w_ms, dt_ms), n, learn_tau)
-        self.a = nn.Parameter(torch.full((n,), float(a0)))
-        self.b = nn.Parameter(torch.full((n,), float(b0)))
+        # 两项适应电流的驱动源不同，消融时分别冻结：
+        #   a·u[t-1]  膜电位驱动，构成 u→w→u 的二阶反馈，产生 class-2 兴奋性（共振）
+        #   b·s[t-1]  发放驱动，是经典的脉冲频率适应
+        # 冻结时保持 a0/b0=0 且 requires_grad=False，等价于该机制完全断开。
+        self.a = nn.Parameter(torch.full((n,), float(a0)), requires_grad=learn_a)
+        self.b = nn.Parameter(torch.full((n,), float(b0)), requires_grad=learn_b)
+        self.learn_a = learn_a
+        self.learn_b = learn_b
 
     def init_state(self, batch: int, features: int, device=None, dtype=None) -> tuple:
         z = torch.zeros(batch, features, device=device, dtype=dtype)

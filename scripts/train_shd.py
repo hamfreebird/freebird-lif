@@ -75,6 +75,10 @@ class Cfg:
     aug_chan: int = 0          # 频道平移上限（±通道），模拟声道长度差异（VTLP 的线性近似）
     aug_time: int = 0          # 时间平移上限（±帧）
     aug_drop: float = 0.0      # 输入脉冲随机丢弃比例
+    rate_target: float = 0.0   # 发放率正则的目标（0 表示关闭）
+    rate_lambda: float = 0.0   # 发放率正则权重
+    learn_a: bool = True       # AdLIF：膜电位驱动的适应电流是否可学
+    learn_b: bool = True       # AdLIF：发放驱动的适应电流是否可学
     label_smooth: float = 0.0
     epochs: int = 40
     lr: float = 3e-3
@@ -148,6 +152,8 @@ class SHDNet(nn.Module):
         self.norms = nn.ModuleList([_mk_norm(cfg.norm, cfg.hidden)
                                     for _ in range(cfg.n_layers)])
         kw = dict(thr=cfg.thr, dt_ms=cfg.dt_ms, learn_tau=cfg.learn_tau)
+        if cfg.variant == "adlif":
+            kw.update(learn_a=cfg.learn_a, learn_b=cfg.learn_b)
         self.neurons = nn.ModuleList(
             [build_neuron(cfg.variant, cfg.hidden, tau_ms=cfg.tau_ms, **kw)
              for _ in range(cfg.n_layers)])
@@ -185,6 +191,7 @@ class SHDNet(nn.Module):
                   for n in self.neurons]
         u_out = torch.zeros(b, N_CLS, device=dev, dtype=dt)
         self.alpha_out = self.cfg.alpha_out
+        self.rate_reg = None
         s_out = None
         out_st = (self.out_neuron.init_state(b, N_CLS, device=dev, dtype=dt)
                   if self.out_neuron is not None else None)
@@ -199,6 +206,7 @@ class SHDNet(nn.Module):
             h = h * mask / (1.0 - self.cfg.in_dropout)
 
         prev = [None] * self.cfg.n_layers   # 上一步各层脉冲，供循环连接用
+        rate_sum = None                     # 可求导的发放率累计，供正则项使用
         rates = []
         for t in range(T):
             a = h[:, t]
@@ -211,6 +219,8 @@ class SHDNet(nn.Module):
                 if self.cfg.dropout > 0 and self.training:
                     s = F.dropout(s, self.cfg.dropout, training=True)
                 a = s
+                layer_mean = a.mean()
+                rate_sum = layer_mean if rate_sum is None else rate_sum + layer_mean
             rates.append(a.detach())
 
             if self.out_neuron is not None:
@@ -224,6 +234,9 @@ class SHDNet(nn.Module):
                 acc = acc + u_out
                 peak = torch.maximum(peak, u_out)
 
+        # rate_sum 是 L 个层的均值之和；除 (L*T) 得到"每层每步的平均发放率"
+        self.rate_reg = (rate_sum / (self.cfg.n_layers * T)
+                         if rate_sum is not None else None)
         if self.out_neuron is not None:
             return s_out
         if self.cfg.readout == "mean_u":
@@ -330,6 +343,7 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
     T = cfg.frames or d["meta"]["T"]
     t0 = time.time()
     hist = []
+    diverged_at = None
 
     for ep in range(cfg.epochs):
         perm = torch.randperm(len(xn), generator=g)
@@ -342,12 +356,24 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
                 xb = augment(xb, cfg)
             logits = model(xb)
             loss = F.cross_entropy(logits, yb, label_smoothing=cfg.label_smooth)
+            if not torch.isfinite(loss):
+                # 静默跑完 40 轮 NaN 会浪费时间且污染结果。AdLIF 的 u→w→u 正反馈
+                # 让它比 LIF 更靠近发散边界，这个检查是必要的。
+                diverged_at = ep + 1
+                print(f"    !! 第 {ep + 1} 轮出现非有限损失，提前终止", flush=True)
+                break
+            if cfg.rate_lambda and model.rate_reg is not None:
+                # 家庭稳态式的发放率惩罚。循环网络失败的直接症状是发放率
+                # 从 ~20% 爬到 40%+（正反馈失控），这一项直接针对该症状。
+                loss = loss + cfg.rate_lambda * (model.rate_reg - cfg.rate_target) ** 2
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
             run_loss += loss.item() * len(idx)
             correct += int((logits.argmax(1) == yb).sum())
             seen += len(idx)
+        if diverged_at:
+            break
         sched.step()
         if verbose and ((ep + 1) % 10 == 0 or ep == 0 or ep == cfg.epochs - 1):
             va = evaluate(model, xv, yv) if xv is not None else float("nan")
@@ -368,6 +394,7 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
         "final_loss": run_loss / seen,
         "rates": rates,
         "epochs_run": cfg.epochs,
+        "diverged_at": diverged_at,
         "seconds": time.time() - t0,
         "params": sum(p.numel() for p in model.parameters()),
         "float_state": model.neurons[0].float_state,
@@ -516,7 +543,39 @@ GRIDS: dict[str, list[Cfg]] = {
             aug_chan=35, hidden=384)
         for v in ("lif", "alif", "adlif", "glif", "mclif")
     ],
-    # 第二轮：在 r1 找出方向后细化（此处占位，按需增补）
+    # M3b：AdLIF 适应电流的机制消融。w 由两项驱动，来源不同：
+    #   a·u[t-1]  膜电位驱动 → u→w→u 二阶反馈，产生 class-2 兴奋性（共振）
+    #   b·s[t-1]  发放驱动   → 经典脉冲频率适应
+    # 分别冻结即可分开两者的贡献。"none" 两支都断，应还原为 LIF，
+    # 用作内部对照（同时验证 learn_a/learn_b 开关本身没引入行为改变）。
+    # "both" 与 M3 的 adlif 完全同配置，重跑用于确认重构无影响。
+    "m3b": [
+        # "both" 与 "none" 不重跑：M3 的 adlif（86.07 ± 0.68）就是 both，
+        # LIF（83.04 ± 0.63）就是 none（a=b=0 时 w 恒为 0，单元测试已逐元素验证）。
+        Cfg(tag="a_only", variant="adlif", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, learn_b=False),
+        Cfg(tag="b_only", variant="adlif", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, learn_a=False),
+    ],
+    "m4b": [
+        # 1) AdLIF 稳定性重测：此前有一次同配置训练在 ep60-70 发散成 NaN，
+        #    但那次与另一个进程并发。这里单独重跑，判断是偶发还是系统性。
+        Cfg(tag="adlif_recheck", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384),
+        # 2) recurrent 复核：M2 里循环失败的直接症状是发放率爬到 40%+。
+        #    加发放率正则直接针对该症状。1 seed 探针，不作为结论。
+        Cfg(tag="rnn_lif_reg", variant="lif", epochs=100, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=0.5,
+            rate_target=0.12, rate_lambda=2.0),
+        Cfg(tag="rnn_adlif_reg", variant="adlif", epochs=100, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=0.5,
+            rate_target=0.12, rate_lambda=2.0),
+    ],
     "r2": [
         Cfg(tag="thr100", thr=1.0),
         Cfg(tag="thr025", thr=0.25),

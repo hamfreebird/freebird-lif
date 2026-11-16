@@ -29,36 +29,11 @@ from pathlib import Path
 
 import numpy as np
 
+from _stats import T975, ci95, exact_mcnemar
+
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-
-
-def ci95(diffs: list[float]) -> tuple[float, float]:
-    """配对差异的 95% 置信区间。n<2 时返回 (-inf, +inf) 表示无法估计。"""
-    n = len(diffs)
-    if n < 2:
-        return (-math.inf, math.inf)
-    m = statistics.fmean(diffs)
-    half = T975.get(n - 1, 2.0) * statistics.stdev(diffs) / math.sqrt(n)
-    return (m - half, m + half)
-
-
-def exact_mcnemar(b: int, c: int) -> float:
-    """McNemar 精确二项检验（双侧）。
-
-    b = A 对 B 错的样本数，c = A 错 B 对的样本数。H0 下 b ~ Binom(b+c, 0.5)。
-    样本量小（b+c 通常几十到几百）时用精确分布而非卡方近似。
-    """
-    n = b + c
-    if n == 0:
-        return 1.0
-    k = min(b, c)
-    tail = sum(math.comb(n, i) for i in range(k + 1)) / (2.0 ** n)
-    return min(1.0, 2.0 * tail)
-
-
-T975 = {1: 12.706, 2: 4.303, 3: 3.182, 4: 2.776, 5: 2.571, 6: 2.447, 7: 2.365,
-        8: 2.306, 9: 2.262, 10: 2.228}
+sys.path.insert(0, str(ROOT / "scripts"))
 
 
 def main() -> int:

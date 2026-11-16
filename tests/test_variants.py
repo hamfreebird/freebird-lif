@@ -270,3 +270,54 @@ def test_float_state_matches_declaration():
     # 注意 n_state 与 float_state 之间**没有**大小关系：MC-LIF 把 K 个树突
     # 打包进一个张量，所以 K=4 时 n_state=3 而 float_state=5。
     # 早期版本在此写了 float_state <= n_state，是错的。
+
+
+def test_adlif_can_freeze_adaptation_terms():
+    """机制消融的前提：a、b 能被单独冻结。
+
+    冻结时必须真的不更新，否则消融实验测的是"少了一个梯度"而不是"少了机制"。
+
+    注意两个坑：
+    1. a 只影响 w，而 w 要到**下一步**才影响 u。所以每轮必须走多个时间步，
+       否则 a 在计算图里根本没有通往损失的路径（我第一版就写成单步，a 恒不更新）。
+    2. 状态跨优化轮复用时要 detach，否则第二次 backward 会回溯已释放的图。
+    """
+    N = 8
+    x = torch.randn(4, N)
+    for la, lb, expect in ((True, True, 2), (True, False, 1), (False, True, 1),
+                           (False, False, 0)):
+        # learn_tau=True 保证始终有可求导参数；否则 a/b 全冻结时 backward 无梯度源
+        n = AdLIF(N, learn_tau=True, learn_a=la, learn_b=lb)
+        n.a.data.fill_(0.3)
+        n.b.data.fill_(0.7)
+        a0, b0 = n.a.clone(), n.b.clone()
+        opt = torch.optim.SGD(n.parameters(), lr=0.5)
+        for _ in range(3):
+            st = tuple(t.detach() for t in n.init_state(4, N))
+            loss = 0.0
+            for _ in range(4):
+                s, st = n.step(x, st)
+                loss = loss + s.sum()
+            opt.zero_grad()
+            loss.backward()
+            opt.step()
+        assert torch.equal(n.a, a0) == (not la), "a 的冻结状态不对"
+        assert torch.equal(n.b, b0) == (not lb), "b 的冻结状态不对"
+        trainable = sum(1 for p in n.parameters() if p.requires_grad)
+        assert trainable == 2 + expect, f"可学张量数 {trainable} != {2 + expect}"
+
+
+def test_adlif_both_frozen_reduces_to_lif():
+    """a=b=0 且都冻结时，w 恒为 0，AdLIF 必须逐元素等于 LIF。"""
+    N = 6
+    torch.manual_seed(0)
+    lif = LIF(N, tau_ms=2.0, thr=0.5, learn_tau=False)
+    ad = AdLIF(N, tau_ms=2.0, tau_w_ms=10.0, thr=0.5, a0=0.0, b0=0.0,
+               learn_tau=False, learn_a=False, learn_b=False)
+    sl = lif.init_state(3, N)
+    sa = ad.init_state(3, N)
+    x = torch.randn(3, N) * 0.8
+    for _ in range(12):
+        a1, sl = lif.step(x, sl)
+        a2, sa = ad.step(x, sa)
+        assert torch.equal(a1, a2)
