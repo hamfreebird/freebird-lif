@@ -63,6 +63,23 @@ class SpikingNeuron(nn.Module):
     def op_count(self) -> float:
         raise NotImplementedError
 
+    def input_scale(self) -> Tensor | None:
+        """返回使"输入耦合增益 = 1"所需的逐神经元缩放，None 表示该变体不适用。
+
+        背景（阶段三 H1）：`u = α·u + (1-α)·x` 里的 `(1-α)` 是输入耦合系数。
+        若把循环电流 `W_rec·s` 与外部输入 `W_in·x` 相加后再送进神经元，循环项
+        也会被乘上 `(1-α)`；而文献写法 `u = α·u + W_in·x + W_rec·s` 不缩放。
+        因此 `rec_gain=1` 在两种写法下相差 `1/(1-α)` 倍。
+
+        本项目的 τ 是逐神经元异构的（1–40 帧），`1-α` 跨 0.025–0.632（约 25 倍），
+        所以缩放必须**逐神经元**，不能用标量。
+
+        只有输入形如 `(1-α)·x` 的变体能给出精确值（LIF / ALIF / AdLIF）。
+        GLIF 的输入是门控 `gi·(x·gt) + (1-gi)·x`、MC-LIF 是 `(1-α_d)` 与 `(1-β)`
+        两级串联，都不存在单一系数，故返回 None——它们的循环连接需要单独标定。
+        """
+        return None
+
     def extra_repr(self) -> str:
         return (f"thr={self.thr}, reset={self.reset}, "
                 f"surrogate={self.surrogate}(alpha={self.surrogate_alpha}), n_state={self.n_state}")

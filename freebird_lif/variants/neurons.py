@@ -75,6 +75,10 @@ class LIF(SpikingNeuron):
     def decay(self) -> Tensor:
         return torch.sigmoid(self.alpha_u)
 
+    def input_scale(self) -> Tensor:
+        """1/(1-α)：把"加在输入上"的循环电流换算到 u 方程里的等效耦合。"""
+        return 1.0 / (1.0 - self.decay).clamp_min(1e-6)
+
     def init_state(self, batch: int, features: int, device=None, dtype=None) -> tuple:
         z = torch.zeros(batch, features, device=device, dtype=dtype)
         return (z, z.clone())  # (u_pre_reset, s_prev)
@@ -116,6 +120,10 @@ class ALIF(SpikingNeuron):
     @property
     def decay(self) -> Tensor:
         return torch.sigmoid(self.alpha_u)
+
+    def input_scale(self) -> Tensor:
+        """1/(1-α)：ALIF 的膜电位更新同样是 u = αu + (1-α)x。"""
+        return 1.0 / (1.0 - torch.sigmoid(self.alpha_u)).clamp_min(1e-6)
 
     def init_state(self, batch: int, features: int, device=None, dtype=None) -> tuple:
         z = torch.zeros(batch, features, device=device, dtype=dtype)
@@ -165,6 +173,10 @@ class AdLIF(SpikingNeuron):
         self.b = nn.Parameter(torch.full((n,), float(b0)), requires_grad=learn_b)
         self.learn_a = learn_a
         self.learn_b = learn_b
+
+    def input_scale(self) -> Tensor:
+        """AdLIF 的输入是 (1-α)(x - w)，循环电流并入 x，故同样按 1/(1-α) 换算。"""
+        return 1.0 / (1.0 - torch.sigmoid(self.alpha_u)).clamp_min(1e-6)
 
     def init_state(self, batch: int, features: int, device=None, dtype=None) -> tuple:
         z = torch.zeros(batch, features, device=device, dtype=dtype)

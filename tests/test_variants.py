@@ -321,3 +321,39 @@ def test_adlif_both_frozen_reduces_to_lif():
         a1, sl = lif.step(x, sl)
         a2, sa = ad.step(x, sa)
         assert torch.equal(a1, a2)
+
+
+def test_input_scale_gives_unit_increment():
+    """input_scale 的定义：使 u 的**单步增量系数**为 1。
+
+    神经元算 `u ← αu + (1-α)·x`，故 `x * input_scale` 时系数为
+    `(1-α)·1/(1-α) = 1`，即 `u[t] - α·u[t-1] = x`。
+
+    注意**不是**"稳态等于 x"：稳态是 `input/(1-α)`，因为 (1-α) 是泄漏率。
+    我最初按"稳态 = x"写断言，实测得到 0.7/(1-α)（τ=1 时 1.107），
+    才发现这个区别——它正是 H1 那条被推翻的推理的来源。
+    """
+    N = 5
+    taus = [1.0, 2.0, 5.0, 20.0, 40.0]
+    n = LIF(N, tau_ms=taus, dt_ms=1.0, thr=1e9, learn_tau=False)  # 阈值极大，不发放
+    sc = n.input_scale()
+    x = torch.full((1, N), 0.7)
+    st = n.init_state(1, N)
+    u_prev = st[0]
+    _, st = n.step(x * sc, st)
+    u_new = st[0]
+    assert torch.allclose(u_new - n.decay * u_prev, x, atol=1e-6), \
+        "单步增量应为 x 本身，说明 (1-α) 未被抵消"
+
+
+def test_input_scale_matches_declared_alpha():
+    """input_scale 必须等于 1/(1-decay)，不能是别的量。"""
+    n = LIF(4, tau_ms=[2.0, 5.0, 10.0, 40.0], learn_tau=False)
+    expect = 1.0 / (1.0 - n.decay)
+    assert torch.allclose(n.input_scale(), expect, rtol=1e-6)
+
+
+def test_input_scale_none_for_unsupported_variants():
+    """GLIF / MC-LIF 的输入不是单一 (1-α) 系数，必须返回 None 而不是编一个值。"""
+    assert GLIF(4).input_scale() is None
+    assert MCLIF(4, n_branch=2).input_scale() is None

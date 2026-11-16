@@ -66,6 +66,7 @@ class Cfg:
     learn_tau: bool = True
     recurrent: bool = False    # 隐层间加循环连接（W_rec·s[t-1]）
     rec_gain: float = 1.0      # 循环权重初始增益，按 1/sqrt(N) 缩放
+    rec_scale: bool = False    # 用 1/(1-α) 逐神经元缩放循环电流（H1）
     norm: str = "ln"           # ln | bn | none
     dropout: float = 0.0       # 隐藏层脉冲 dropout
     in_dropout: float = 0.0    # 输入脉冲 dropout
@@ -84,6 +85,8 @@ class Cfg:
     epochs: int = 40
     lr: float = 3e-3
     wd: float = 1e-4
+    n_in: int = 700            # 输入通道数（SHD=700；EvTouch=39；N-MNIST=1156）
+    n_classes: int = 20        # 类别数（SHD=20；EvTouch=36；N-MNIST=10）
     batch: int = 512
     val_mode: str = "random"   # random | speaker | all
     seed: int = 0
@@ -146,7 +149,7 @@ class SHDNet(nn.Module):
     def __init__(self, cfg: Cfg):
         super().__init__()
         self.cfg = cfg
-        dims = [N_IN] + [cfg.hidden] * cfg.n_layers
+        dims = [cfg.n_in] + [cfg.hidden] * cfg.n_layers
         self.fcs = nn.ModuleList(
             [nn.Linear(dims[i], dims[i + 1]) for i in range(cfg.n_layers)])
         # norm=none 时偏置是必要的（没有 BN 来吸收它）
@@ -179,9 +182,19 @@ class SHDNet(nn.Module):
                 with torch.no_grad():
                     r.weight.mul_(cfg.rec_gain)
                 self.recs.append(r)
-        self.fc_out = nn.Linear(cfg.hidden, N_CLS)
+
+        # H1 的 rec_scale 在 forward 里按当前 α 现算，不在这里缓存：
+        #   1) 普通 list 不会被 .to(device) 搬移，会静默留在 CPU
+        #   2) α 可学（learn_tau=True），快照会在训练中过期
+        if cfg.recurrent and cfg.rec_scale:
+            for ne in self.neurons:
+                if ne.input_scale() is None:
+                    raise ValueError(
+                        f"变体 {cfg.variant} 的输入不是 (1-α)·x 形式，rec_scale 无定义；"
+                        f"请关掉 rec_scale 或先单独标定该变体的循环增益")
+        self.fc_out = nn.Linear(cfg.hidden, cfg.n_classes)
         # sum_s 读出需要一个会发放的输出层；其余读出用非脉冲积分器
-        self.out_neuron = (build_neuron(cfg.variant, N_CLS, **kw)
+        self.out_neuron = (build_neuron(cfg.variant, cfg.n_classes, **kw)
                            if cfg.readout == "sum_s" else None)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -190,15 +203,15 @@ class SHDNet(nn.Module):
         dev, dt = x.device, x.dtype
         states = [n.init_state(b, self.cfg.hidden, device=dev, dtype=dt)
                   for n in self.neurons]
-        u_out = torch.zeros(b, N_CLS, device=dev, dtype=dt)
+        u_out = torch.zeros(b, self.cfg.n_classes, device=dev, dtype=dt)
         self.alpha_out = self.cfg.alpha_out
         self.rate_reg = None
         s_out = None
-        out_st = (self.out_neuron.init_state(b, N_CLS, device=dev, dtype=dt)
+        out_st = (self.out_neuron.init_state(b, self.cfg.n_classes, device=dev, dtype=dt)
                   if self.out_neuron is not None else None)
 
-        acc = torch.zeros(b, N_CLS, device=dev, dtype=dt)
-        peak = torch.full((b, N_CLS), float("-inf"), device=dev, dtype=dt)
+        acc = torch.zeros(b, self.cfg.n_classes, device=dev, dtype=dt)
+        peak = torch.full((b, self.cfg.n_classes), float("-inf"), device=dev, dtype=dt)
 
         h = x[:, :T] * self.cfg.in_scale
         if self.cfg.in_dropout > 0 and self.training:
@@ -207,6 +220,9 @@ class SHDNet(nn.Module):
             h = h * mask / (1.0 - self.cfg.in_dropout)
 
         prev = [None] * self.cfg.n_layers   # 上一步各层脉冲，供循环连接用
+        # H1：见构造函数注释。每层一个 [N] 向量，随 α 的当前值现算。
+        rec_sc = ([ne.input_scale() for ne in self.neurons]
+                  if (self.cfg.recurrent and self.cfg.rec_scale) else None)
         rate_sum = None                     # 可求导的发放率累计，供正则项使用
         rates = []
         for t in range(T):
@@ -214,7 +230,10 @@ class SHDNet(nn.Module):
             for i, (fc, nrm, ne) in enumerate(zip(self.fcs, self.norms, self.neurons)):
                 cur = nrm(fc(a))
                 if self.cfg.recurrent and prev[i] is not None:
-                    cur = cur + self.recs[i](prev[i])
+                    rec = self.recs[i](prev[i])
+                    cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
+                    # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
+
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 if self.cfg.dropout > 0 and self.training:
@@ -261,12 +280,17 @@ class SHDNet(nn.Module):
         tot = [0.0] * self.cfg.n_layers
         h = x[:, :T] * self.cfg.in_scale
         prev = [None] * self.cfg.n_layers
+        rec_sc = ([ne.input_scale() for ne in self.neurons]
+                  if (self.cfg.recurrent and self.cfg.rec_scale) else None)
         for t in range(T):
             a = h[:, t]
             for i, (fc, nrm, ne) in enumerate(zip(self.fcs, self.norms, self.neurons)):
                 cur = nrm(fc(a))
                 if self.cfg.recurrent and prev[i] is not None:
-                    cur = cur + self.recs[i](prev[i])
+                    rec = self.recs[i](prev[i])
+                    cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
+                    # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
+
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 tot[i] += s.mean().item() / T
