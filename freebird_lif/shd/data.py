@@ -43,7 +43,38 @@ EXPECTED_BYTES = {
 }
 
 
-def download(dest_dir: Path, force: bool = False) -> dict[str, Path]:
+def _fetch_range(url: str, start: int, end: int, dst: Path, retries: int = 5) -> int:
+    """下载 [start, end] 闭区间到一个分片文件，返回字节数。
+
+    **用 curl 子进程，不用 urllib。** 本机经代理访问时，urllib 的 Range 请求
+    会挂在 0 字节不再推进（8 个并发全部如此，等了 20 分钟无进展）；同一网络下
+    `curl -r` 实测 78 KB/s。这类差异不值得深究，能验证的是哪个work。
+    """
+    import subprocess
+
+    want = end - start + 1
+    for k in range(retries):
+        r = subprocess.run(
+            ["curl", "-sL", "--max-time", "900", "-r", f"{start}-{end}", "-o", str(dst), url],
+            capture_output=True,
+        )
+        if r.returncode == 0 and dst.exists() and dst.stat().st_size == want:
+            return want
+        time.sleep(2.0 * (k + 1))
+    raise RuntimeError(f"分片 {start}-{end} 下载失败（重试 {retries} 次）")
+
+
+def download(dest_dir: Path, force: bool = False, workers: int = 8) -> dict[str, Path]:
+    """下载并解压 SHD。
+
+    **必须并行分段。** 本机到 zenkelab 的单流实测只有 12–18 KB/s，130 MB 要 2–3 小时；
+    而该站支持 Range（`Accept-Ranges: bytes`），8 路分段实测 78 KB/s，快 4–6 倍。
+    这在阶段三 M0 实测得到，阶段二用的单流实现因此被替换。
+
+    续传：若目标文件已存在但是不完整，把它当作前缀复用，只并行下载剩余部分。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
     dest_dir.mkdir(parents=True, exist_ok=True)
     out = {}
     for split, url in URLS.items():
@@ -53,18 +84,36 @@ def download(dest_dir: Path, force: bool = False) -> dict[str, Path]:
             out[split] = h5
             continue
         expect = EXPECTED_BYTES[split]
-        if gz.exists() and gz.stat().st_size != expect and not force:
-            print(f"  {gz.name} 大小异常（{gz.stat().st_size}≠{expect}），重新下载")
+        have = gz.stat().st_size if gz.exists() else 0
+        if have > expect:                       # 明显损坏，重来
             gz.unlink()
-        if not gz.exists() or force:
-            print(f"  下载 {url}")
-            with urllib.request.urlopen(url, timeout=120) as r, open(gz, "wb") as f:
-                shutil.copyfileobj(r, f, length=1 << 20)
+            have = 0
+        if have == expect:
+            print(f"  {gz.name} 已完整（{have} 字节），跳过下载")
+        else:
+            if have:
+                print(f"  续传 {gz.name}：已有 {have / 1e6:.1f} MB / {expect / 1e6:.1f} MB")
+            else:
+                print(f"  分段下载 {url}（{workers} 路）")
+            rest = expect - have
+            # 分片数量按剩余大小定，单片约 4 MB，上限 workers*3 以摊薄尾部等待
+            nchunk = max(1, min(workers * 3, rest // (4 << 20) + 1))
+            size = (rest + nchunk - 1) // nchunk
+            spans = [(have + i * size, min(have + (i + 1) * size - 1, expect - 1))
+                     for i in range(nchunk)]
+            parts = [dest_dir / f".{gz.name}.part{i}" for i in range(nchunk)]
+            with ThreadPoolExecutor(max_workers=workers) as ex:
+                list(ex.map(lambda a: _fetch_range(url, a[0][0], a[0][1], a[1]),
+                            zip(spans, parts)))
+            with open(gz, "ab") as f:            # 追加到已有前缀之后
+                for part in parts:
+                    with open(part, "rb") as pf:
+                        shutil.copyfileobj(pf, f, length=1 << 22)
+                    part.unlink()
         got = gz.stat().st_size
         if got != expect:
             raise RuntimeError(
-                f"{gz.name} 下载不完整：{got} 字节，应为 {expect}。"
-                f"删掉该文件后重试（支持断点续传用 curl -C -）。")
+                f"{gz.name} 下载不完整：{got} 字节，应为 {expect}。")
         print(f"  解压 {gz.name}")
         with gzip.open(gz, "rb") as src, open(h5, "wb") as dst:
             shutil.copyfileobj(src, dst, length=1 << 22)
