@@ -8,9 +8,12 @@ __pycache__/
 data/*
 !data/.gitkeep
 
-# 基准输出与图表
+# 基准输出与图表。调优网格的原始 json 可由脚本重建，不入库；
+# 但 M3 的逐 seed 结果与逐样本预测是统计结论的唯一证据，必须入库。
 benchmarks/*.csv
 benchmarks/*.json
+!benchmarks/train_shd_m3.json
+!benchmarks/m3_summary.json
 
 # 训练产物（检查点由 scripts/export.py 导出到 models/ 后入库）
 runs/

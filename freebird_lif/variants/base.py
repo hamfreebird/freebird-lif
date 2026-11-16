@@ -3,10 +3,12 @@
 设计约束来自实验需求：六个变体必须**只差在神经元方程**，其余全部相同。
 因此接口只暴露状态与单步推进，不掺入任何层结构或优化逻辑。
 
-两类成本指标是并行的：
-    n_state   每神经元的浮点状态个数（LIF=1，AdLIF=2，MC-LIF=1+K）
-    op_count  每神经元每步的算术操作数（含 sigmoid 折算）
+三个成本指标是并行的：
+    n_state     每神经元的状态**张量**个数（实现细节，含二值的 s_prev）
+    float_state 每神经元的**浮点**状态个数（部署内存：LIF=1，AdLIF=2，MC-LIF=1+K）
+    op_count    每神经元每步的算术操作数（含 sigmoid 折算）
 一个"精度 +1% 但成本 2×"的变体是坏交易，所以成本必须和精度一起报。
+`n_state` 与 `float_state` 必须分开：s_prev 是二值脉冲，不占浮点存储。
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ class SpikingNeuron(nn.Module):
     """
 
     n_state: int = 1
+    float_state: int = 1
 
     def __init__(self, thr: float = 0.5, alpha: float = 2.0,
                  surrogate: str = "fast_sigmoid", reset: str = "subtract"):

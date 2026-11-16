@@ -248,3 +248,25 @@ def test_scalar_tau_still_uniform():
     """标量路径不能因为支持数组而退化。"""
     n = LIF(6, tau_ms=2.0, dt_ms=1.0, learn_tau=False)
     assert n.alpha_u.unique().numel() == 1
+
+
+def test_float_state_matches_declaration():
+    """float_state 是部署内存成本，必须与 init_state 里的浮点张量一致。
+
+    s_prev 是二值脉冲，不计入浮点状态——这也是 n_state（张量个数）与
+    float_state（浮点个数）必须分开的原因。
+    """
+    N = 4
+    cases = {
+        LIF(N): 1,
+        ALIF(N): 2,
+        AdLIF(N): 2,
+        GLIF(N): 2,
+        MCLIF(N, n_branch=2): 3,
+        MCLIF(N, n_branch=4): 5,
+    }
+    for m, expect in cases.items():
+        assert m.float_state == expect, f"{type(m).__name__}: {m.float_state} != {expect}"
+    # 注意 n_state 与 float_state 之间**没有**大小关系：MC-LIF 把 K 个树突
+    # 打包进一个张量，所以 K=4 时 n_state=3 而 float_state=5。
+    # 早期版本在此写了 float_state <= n_state，是错的。

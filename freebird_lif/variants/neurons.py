@@ -63,7 +63,8 @@ class LIF(SpikingNeuron):
     τ 可学习时每神经元 1 个参数。
     """
 
-    n_state = 2
+    n_state = 2        # (u, s_prev)
+    float_state = 1    # u
 
     def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  learn_tau: bool = False, **kw):
@@ -101,7 +102,8 @@ class ALIF(SpikingNeuron):
     膜电位振荡（class-2 兴奋性），而自适应阈值不能。
     """
 
-    n_state = 3  # (u, b, s_prev)
+    n_state = 3       # (u, b, s_prev)
+    float_state = 2   # u, b
 
     def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  tau_b_ms: float = 10.0, beta: float = 0.5,
@@ -139,11 +141,14 @@ class AdLIF(SpikingNeuron):
         w[t] = β·w[t-1] + (1-β)·a·u[t-1] + b·s[t-1]
         s[t] = H(u[t] - θ)
 
-    四个可学习神经元参数：α, β, a, b。SHD 上这是最强基线之一
-    （同架构 3×128 前馈：LIF 87.04% → AdLIF 93.06%）。
+    四个可学习神经元参数：α, β, a, b。SHD 上这是最强基线之一，
+    但**文献数字属于循环结构**：RSNN 的 LIF 87.04% → RadLIF(adLIF) 94.62%
+    （Bittar & Garner 2022，141k / 3.9M 参数）。早期版本误记为"前馈 3×128"，
+    见 PLAN §3.3.1 的勘误。
     """
 
-    n_state = 3  # (u, w, s_prev)
+    n_state = 3       # (u, w, s_prev)
+    float_state = 2   # u, w
 
     def __init__(self, n: int, tau_ms=2.0, tau_w_ms=10.0,
                  dt_ms: float = 1.0, a0: float = 0.0, b0: float = 0.0,
@@ -188,7 +193,8 @@ class GLIF(SpikingNeuron):
     论文的三门结构意图，报告中会注明这一点。
     """
 
-    n_state = 3  # (u, s_prev, gt[n])
+    n_state = 3       # (u, s_prev, gt[n])
+    float_state = 2   # u, gt
 
     def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  learn_tau: bool = True, **kw):
@@ -244,6 +250,7 @@ class MCLIF(SpikingNeuron):
         self.K = int(n_branch)
         # n_state 计的是 init_state 返回的张量个数：膜电位 + 叠在一起的 K 个树突 + 上一步脉冲
         self.n_state = 3
+        self.float_state = 1 + self.K   # u + K 个树突电位
         self.beta_u = _alpha_param(_decay_of(tau_ms, dt_ms), n, learn_tau)
 
         lo, hi = tau_d_range_ms

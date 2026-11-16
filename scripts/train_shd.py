@@ -262,6 +262,19 @@ class SHDNet(nn.Module):
 
 
 @torch.no_grad()
+def predict(model: SHDNet, x, bs: int = 512) -> np.ndarray:
+    """返回逐样本预测类别。用于 McNemar 检验——它比 3 seed 的配对 t 检验
+    功力高得多，因为它逐样本比较两个模型在同一测试集上的对错。"""
+    model.eval()
+    dev = next(model.parameters()).device
+    out = []
+    for i in range(0, len(x), bs):
+        xb = torch.from_numpy(x[i : i + bs]).float().to(dev)
+        out.append(model(xb).argmax(1).cpu().numpy().astype(np.uint8))
+    return np.concatenate(out)
+
+
+@torch.no_grad()
 def evaluate(model: SHDNet, x, y, bs: int = 512) -> float:
     model.eval()
     dev = next(model.parameters()).device
@@ -336,9 +349,8 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
             correct += int((logits.argmax(1) == yb).sum())
             seen += len(idx)
         sched.step()
-        if verbose and xv is not None and (
-                (ep + 1) % 10 == 0 or ep == 0 or ep == cfg.epochs - 1):
-            va = evaluate(model, xv, yv)
+        if verbose and ((ep + 1) % 10 == 0 or ep == 0 or ep == cfg.epochs - 1):
+            va = evaluate(model, xv, yv) if xv is not None else float("nan")
             hist.append({"epoch": ep + 1, "loss": run_loss / seen,
                          "train_acc": correct / seen, "val": va})
             print(f"    ep{ep + 1:3d}  loss={run_loss / seen:.4f}  "
@@ -347,6 +359,7 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
 
     xb = torch.from_numpy(np.ascontiguousarray(xn[:512])).float().to(dev)
     rates = model.spike_rates(xb)
+    te_pred = predict(model, d["x_test"])
     r = {
         **asdict(cfg),
         "val": evaluate(model, xv, yv) if xv is not None else float("nan"),
@@ -357,6 +370,9 @@ def run(cfg: Cfg, d: dict, dev, verbose: bool = True) -> dict:
         "epochs_run": cfg.epochs,
         "seconds": time.time() - t0,
         "params": sum(p.numel() for p in model.parameters()),
+        "float_state": model.neurons[0].float_state,
+        "op_count": model.neurons[0].op_count(),
+        "test_pred": te_pred.tolist(),
         "hist": hist,
     }
     return r
@@ -488,6 +504,17 @@ GRIDS: dict[str, list[Cfg]] = {
     "r10": [
         Cfg(tag="final", epochs=120, val_mode="all", norm="none", in_scale=5.0,
             tau_mode="het", tau_lo=1.0, tau_hi=40.0, aug_chan=35, hidden=384),
+    ],
+    # M3：RQ1 主实验。五个变体在 M2 定稿配方下逐一对齐。
+    # 统一项：2×384、无归一化、in_scale=5、层内异构 τ（1→40 帧，层间 ×2）、
+    #         频道平移 ±35、120 epoch、batch 512、同一 seed 集。
+    # 唯一变量是神经元方程。用 val_mode=all（7156 条全用、固定 120 epoch、
+    # 取末轮权重），避免"早停轮次不同"这个额外混淆。
+    "m3": [
+        Cfg(tag=v, variant=v, epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384)
+        for v in ("lif", "alif", "adlif", "glif", "mclif")
     ],
     # 第二轮：在 r1 找出方向后细化（此处占位，按需增补）
     "r2": [
