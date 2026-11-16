@@ -21,6 +21,7 @@ from __future__ import annotations
 import gzip
 import hashlib
 import shutil
+import time
 import urllib.request
 from pathlib import Path
 
@@ -53,6 +54,8 @@ def _fetch_range(url: str, start: int, end: int, dst: Path, retries: int = 5) ->
     import subprocess
 
     want = end - start + 1
+    if dst.exists() and dst.stat().st_size == want:
+        return want                      # 分片级续传：重跑时不重下已完成的分片
     for k in range(retries):
         r = subprocess.run(
             ["curl", "-sL", "--max-time", "900", "-r", f"{start}-{end}", "-o", str(dst), url],

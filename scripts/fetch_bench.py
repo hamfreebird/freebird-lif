@@ -29,18 +29,29 @@ ROOT = Path(__file__).resolve().parents[1]
 DEST = ROOT / "data" / "bench" / "nmnist"
 REPO = "Blackrose900/N-MNIST"
 BASE = f"https://huggingface.co/datasets/{REPO}/resolve/main"
-API = f"https://huggingface.co/api/datasets/{REPO}/tree/main?recursive=true&limit=1000"
 
 
 def list_all(retries: int = 5) -> list[str]:
-    """一次列出仓库全部文件。
+    """列出仓库全部文件。
 
-    必须用 `recursive=true` + 游标翻页：单目录接口会把结果截到 1000 条，
-    而 Train/0 恰好有约 997 个，看起来"正常"实则已丢数据；非递归版本
-    更会漏掉整个 Train 层级（第一版就撞上了）。
+    **不要用 recursive 接口。** 它看起来最省事，但会在 2 万条处静默截断——
+    本仓库恰好约 2 万个文件，被切掉的正是最后两个类（Train/8、Train/9），
+    表现为"这两个类有 0 个文件"。只有逐目录列举才完整。
+
+    逐目录 20 次调用，每次约 6 秒，合计两分钟，比一次隐式的数据丢失便宜。
     """
-    url, files = API, []
-    for _page in range(40):
+    files: list[str] = []
+    for split in ("Train", "Test"):
+        for digit in range(10):
+            files += _list_dir(f"{split}/{digit}", retries)
+    return files
+
+
+def _list_dir(path: str, retries: int = 5) -> list[str]:
+    """列单个目录。这是唯一可靠的接口（见 list_all 的说明）。"""
+    url = f"https://huggingface.co/api/datasets/{REPO}/tree/main/{path}"
+    out: list[str] = []
+    for _page in range(5):
         last = None
         data = link = None
         for k in range(retries):
@@ -53,12 +64,12 @@ def list_all(retries: int = 5) -> list[str]:
                 last = e
                 time.sleep(2.0 * (k + 1))
         if data is None:
-            raise RuntimeError(f"列举失败：{last}")
-        files += [f["path"] for f in data if f.get("type") == "file"]
+            raise RuntimeError(f"列举 {path} 失败：{last}")
+        out += [f["path"] for f in data if f.get("type") == "file"]
         if not link or 'rel="next"' not in link:
             break
         url = link.split("<")[1].split(">")[0]
-    return files
+    return out
 
 
 def fetch_one(remote: str, local: Path, retries: int = 4) -> tuple[bool, int]:
