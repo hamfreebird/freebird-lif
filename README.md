@@ -5,7 +5,7 @@ LIF 脉冲神经网络研究项目。当前处于**第二阶段**。
 | 阶段 | 主题 | 状态 |
 |---|---|---|
 | v1 | MNIST 16×16，CPU 高效推理（98.97%，0.118 ms/样本） | 完成，已归档 |
-| v2 | LIF 变体在 SHD 上的对比 + Arc GPU 训练 | M0–M4 完成，M5 待启动 |
+| v2 | LIF 变体在 SHD 上的对比 + Arc GPU 训练 | **六个里程碑全部完成** |
 
 完整方案见 [PLAN.md](PLAN.md)。第一阶段的技术基准与数据见 [docs/PLAN-v1-lif-mnist.md](docs/PLAN-v1-lif-mnist.md)，说明见 [docs/README-v1.md](docs/README-v1.md)。
 
@@ -19,6 +19,7 @@ LIF 脉冲神经网络研究项目。当前处于**第二阶段**。
 | M3 五变体对比 | **完成：AdLIF 86.07（+3.03，显著）；ALIF/GLIF 不可区分；MC-LIF −3.09** |
 
 | M4 分析 | **完成：机制消融、成本-精度、分类别误差、recurrent 复核** |
+| M5 报告 | **完成：[benchmarks/report-v2.md](benchmarks/report-v2.md)** |
 
 变体结论见 [benchmarks/m3_variants.md](benchmarks/m3_variants.md)，深度分析见
 [benchmarks/m4_analysis.md](benchmarks/m4_analysis.md)。要点：

@@ -13,8 +13,10 @@
 from __future__ import annotations
 
 import argparse
+import json
 import statistics
 import time
+from pathlib import Path
 
 import torch
 import torch.nn as nn
@@ -136,6 +138,13 @@ def main() -> int:
             "matmul": matmul_bench(dev, sync),
             "snn": snn_bench(dev, sync, args.T, args.batches),
         }
+
+    # 落盘：报告的每一个数字都要有可查的产物，不能只活在终端输出里
+    out = Path(__file__).resolve().parent.parent / "benchmarks" / "xpu_gate.json"
+    out.parent.mkdir(exist_ok=True)
+    out.write_text(json.dumps({"args": vars(args), "results": results},
+                              indent=2, ensure_ascii=False, default=str), "utf-8")
+    print(f"\n→ {out}")
 
     print("\n" + "=" * 62)
     if has_xpu and "cpu" in results and "xpu" in results:
