@@ -625,6 +625,38 @@ GRIDS: dict[str, list[Cfg]] = {
         Cfg(tag="smooth", label_smooth=0.1),
         Cfg(tag="wd5e3", wd=5e-3),
     ],
+    # M1 的前馈对照：H0 的每一格都要配一个同基线的前馈，否则测到的是
+    # "基线配方的差异"而不是"循环的贡献"。强基线的前馈已有（r10 final，
+    # 3 seed 且带 test_pred），只需补弱基线的。
+    "h0ff": [
+        Cfg(tag="h0_weak_ff", save_weights=True),
+    ],
+    # 强基线的前馈：r10 有 3 seed 的预测但没有权重，诊断仪器需要权重，
+    # 补一个 seed 即可（诊断只做机制对比，不参与精度统计）。
+    "h0ffs": [
+        Cfg(tag="h0_strong_ff", save_weights=True, epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384),
+    ],
+    # M1 / H0：循环的收益是否依赖基线强度（2×2）
+    #
+    # 弱基线的定义必须固定：Cfg() 默认 = 2×256 / LayerNorm / in_scale=1 /
+    # 固定 τ=2 帧 / 无增强 / 40 epoch / val_mode=speaker，阶段二实测 test 54.15%。
+    # 强基线 = 阶段二定稿配方，test 83.04%。
+    #
+    # 为什么要有 rec_gain 这一维：M0 实测 rec_gain=1 时循环电流只有前馈的 3.7%，
+    # 而"同量级"需 ≈12（in_scale=5 下实测二分）。只用 gain=1 会重犯阶段二的错误——
+    # 拿一个几乎没接上的循环去论证"循环无用"。
+    "h0": [
+        Cfg(tag="h0_weak_g1", save_weights=True, recurrent=True, rec_gain=1.0),
+        Cfg(tag="h0_weak_g12", save_weights=True, recurrent=True, rec_gain=12.0),
+        Cfg(tag="h0_strong_g1", save_weights=True, epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=1.0),
+        Cfg(tag="h0_strong_g12", save_weights=True, epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=12.0),
+    ],
 }
 
 
