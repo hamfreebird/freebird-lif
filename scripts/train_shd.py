@@ -46,6 +46,47 @@ OUT = ROOT / "benchmarks"
 N_IN, N_CLS = 700, 20
 
 
+def _init_ei_balanced(weight: torch.Tensor, ei_ratio: float = 0.8) -> None:
+    """H2 的干预：E/I 平衡的循环权重初始化（原地）。
+
+    当前默认初始化是 iid 均匀分布，**行和不为零**——它有一个均值分量，
+    把整层神经元往同一个方向推。M1 实测 gain=12 时发放率从 0.227/0.284
+    涨到 0.267/0.365，正是这个均值分量在把网络推向饱和。
+
+    这里做两件事：
+      1. 按 ei_ratio 指定符号：80% 兴奋（正）、20% 抑制（负）
+      2. 把抑制列整体平移，使每行和为零——均值分量为 0，只剩涨落
+    然后按行 std 归一到 1，使 `rec_gain` 仍然表示"方差倍数"，与 default
+    初化的语义一致，两个 init 之间可以直接比较。
+
+    已知近似：平移后少数抑制权重可能变正（符号约束被轻微破坏）。这是
+    有意的取舍——严格保号的行和归零需要解一个受限最小二乘，而本项目的
+    目的是检验"去掉均值分量是否让循环变有用"，不需要精确的 E/I 结构。
+    """
+    N = weight.shape[1]
+    n_inh = int(round((1.0 - ei_ratio) * N))
+    if n_inh <= 0:
+        raise ValueError("ei_ratio 必须 < 1，否则没有抑制性连接")
+    inh = torch.randperm(N, device=weight.device)[:n_inh]
+    # 幅度 × 符号：兴奋列取正、抑制列取负。
+    # 不能用「对称高斯 × ±1」——那样正负各占一半，"兴奋"列里也有一半是负权重，
+    # 实测正比例 0.501，等于没设 E/I。
+    w = torch.randn_like(weight).abs()
+    w[:, inh] = -w[:, inh]
+
+    # 行和归零：把**整行**的和平摊到抑制列上减掉。
+    # 注意不是只减兴奋和——第一版就是这样写的，结果新行和等于原抑制和，
+    # 均值分量根本没去掉（实测 |行和| 平均 3.97，等于没做）。
+    w[:, inh] -= w.sum(dim=1, keepdim=True) / float(n_inh)
+
+    # 归一到与 nn.Linear 默认初始化相同的尺度：U(-a,a) 的 std = a/sqrt(3)，
+    # a = 1/sqrt(N)。若在这里归一到 std=1，rec_gain 在两种 init 下的含义会差
+    # 约 20 倍（N=128 时），两个 init 就无法直接比较。
+    target = 1.0 / (3.0 ** 0.5 * N ** 0.5)
+    w = w / w.std(dim=1, keepdim=True).clamp_min(1e-6) * target
+    weight.copy_(w)
+
+
 @dataclass
 class Cfg:
     """一次训练的全部自由度。除 `tag` 外每一项都会影响结果。"""
@@ -67,6 +108,8 @@ class Cfg:
     recurrent: bool = False    # 隐层间加循环连接（W_rec·s[t-1]）
     rec_gain: float = 1.0      # 循环权重初始增益，按 1/sqrt(N) 缩放
     rec_scale: bool = False    # 用 1/(1-α) 逐神经元缩放循环电流（H1）
+    rec_init: str = "default"  # default | ei_balanced（H2：E/I 平衡 + 行和归零）
+    ei_ratio: float = 0.8      # ei_balanced 下兴奋性连接占比
     norm: str = "ln"           # ln | bn | none
     dropout: float = 0.0       # 隐藏层脉冲 dropout
     in_dropout: float = 0.0    # 输入脉冲 dropout
@@ -180,6 +223,10 @@ class SHDNet(nn.Module):
             for _ in range(cfg.n_layers):
                 r = nn.Linear(cfg.hidden, cfg.hidden, bias=False)
                 with torch.no_grad():
+                    if cfg.rec_init == "ei_balanced":
+                        _init_ei_balanced(r.weight, cfg.ei_ratio)
+                    elif cfg.rec_init != "default":
+                        raise ValueError(f"未知 rec_init {cfg.rec_init!r}")
                     r.weight.mul_(cfg.rec_gain)
                 self.recs.append(r)
 
@@ -624,6 +671,55 @@ GRIDS: dict[str, list[Cfg]] = {
         Cfg(tag="thr025", thr=0.25),
         Cfg(tag="smooth", label_smooth=0.1),
         Cfg(tag="wd5e3", wd=5e-3),
+    ],
+    # M2 第一项：收窄 τ 范围，检验「循环与异构 τ 功能重叠」这一解释。
+    #
+    # 预测（若解释成立）：τ 越窄，前馈精度越低，而循环带来的增益越大。
+    # 若 τ_hi=5 时循环仍然无收益，解释被推翻，转 H2–H6。
+    #
+    # **rec_gain 必须按 τ 范围分别标定**（scripts/diagnose_h1.py 的实测二分）：
+    #   τ_hi=5 → 6.75   τ_hi=10 → 8.1   τ_hi=40 → 12.3
+    # 直接用 12 会把短 τ 格子过度驱动 1.8 倍——配对增益不是常数，因为 τ 变了
+    # 发放率就变，s 的密度和循环电流幅值都跟着变。
+    #
+    # τ_hi=40 的两个格子已由 M1 测过（h0_strong_ff 83.04 / h0_strong_g12 83.13），
+    # 此处只补 τ_hi=5 与 10。
+    "m2tau": [
+        Cfg(tag="tau10_ff", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=10.0,
+            aug_chan=35, hidden=384),
+        Cfg(tag="tau10_rnn", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=10.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=8.1,
+            save_weights=True),
+        Cfg(tag="tau5_ff", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=5.0,
+            aug_chan=35, hidden=384),
+        Cfg(tag="tau5_rnn", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=5.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=6.75,
+            save_weights=True),
+    ],
+    # M2 第二项：E/I 平衡的循环初始化（H2）。
+    #
+    # 默认初始化的循环权重的**行和不为零**——它给整层一个共同偏置。M1 实测
+    # gain=12 时发放率从 0.227/0.284 涨到 0.267/0.365，就是它在推网络饱和。
+    # 行和归零后只剩涨落，理论上可以在不饱和的前提下加大循环强度。
+    #
+    # 配对增益要重标：行和归零去掉了均值分量，达到同幅值需 gain≈23
+    # （default 只需 12，见 scripts/diagnose_h1.py 的实测二分）。
+    #
+    # 两个格子：gain=23 是配对强度；gain=12 与 M1 的 default g12 同增益，
+    # 构成"固定增益、只换初始化"的 A/B。
+    "m2ei": [
+        Cfg(tag="ei_g23", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_init="ei_balanced",
+            rec_gain=23.0, save_weights=True),
+        Cfg(tag="ei_g12", epochs=120, val_mode="all", norm="none",
+            in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_init="ei_balanced",
+            rec_gain=12.0, save_weights=True),
     ],
     # M1 的前馈对照：H0 的每一格都要配一个同基线的前馈，否则测到的是
     # "基线配方的差异"而不是"循环的贡献"。强基线的前馈已有（r10 final，

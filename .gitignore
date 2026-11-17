@@ -21,6 +21,9 @@ benchmarks/*.json
 !benchmarks/train_shd_h0ff.json
 !benchmarks/train_shd_h0ffs.json
 !benchmarks/rnn_diag.json
+!benchmarks/train_shd_m2tau.json
+!benchmarks/train_shd_m2ei.json
+
 
 
 # 训练产物（检查点由 scripts/export.py 导出到 models/ 后入库）
