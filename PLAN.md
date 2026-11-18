@@ -616,3 +616,7 @@ scripts/
 | 2026-11-18 | **实现 E/I 平衡初始化**：行和严格归零、E/I=80/20、尺度对齐默认 init。配对增益由 12 升到 23，说明默认 init 的循环幅值有一半来自均值分量 | `tests/test_train.py` 7 项 |
 | 2026-11-16 | 训练脚本的 `N_IN/N_CLS` 改为 `Cfg.n_in/n_classes`（默认 700/20 不变）；新增 `scripts/train_bench.py` 与 `freebird_lif/bench/` | 跨数据集复用同一份 `run()` |
 | 2026-11-16 | 初始版本。阶段二归档，工作区清理 | 阶段三启动 |
+
+---
+
+**下一阶段**：`PLAN-v4.md`（内在时间连续性：TC-LIF × AdLIF 与类意识指标）。
