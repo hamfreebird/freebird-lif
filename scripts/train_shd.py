@@ -721,6 +721,56 @@ GRIDS: dict[str, list[Cfg]] = {
             aug_chan=35, hidden=384, recurrent=True, rec_init="ei_balanced",
             rec_gain=12.0, save_weights=True),
     ],
+    # RQ-B：AdLIF 适应电流的机制归因，在**循环结构**下重做。
+    #
+    # 阶段二只在前馈下做过（m3b：a_only 84.91 / b_only 86.93 / both 86.07 /
+    # none 83.04），结论是「增益来自发放驱动 b，膜电位驱动 a 无可测贡献」。
+    # 但文献的机制解释（a·u 的二阶反馈产生共振）是在**循环**结构下提出的——
+    # a 的共振特性可能与循环动力学耦合后才显现。
+    #
+    # 「都断」格直接复用 M1 的 h0_strong_g12（LIF + 循环，83.13 ± 0.69）：
+    # AdLIF 在 a=b=0 时与 LIF 逐位等价（本机逐时间步验证过），故无需重跑。
+    #
+    # rec_gain 用 12.0：τ=40 下的实测标定区间是 [12.06, 12.52]，
+    # 12.0 只低 0.5%，且与上面那个控制格完全一致——一致性比追标定中点更重要。
+    # AdLIF 在初始化时 a=b=0、与 LIF 同分布，故该增益对三种消融在初始时刻
+    # 是同一个「配平」定义；训练后的实际耦合比另用检查点单独测（见分析脚本）。
+    "rqb": [
+        Cfg(tag="rqb_a_only", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=12.0,
+            learn_b=False, save_weights=True),
+        Cfg(tag="rqb_b_only", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=12.0,
+            learn_a=False, save_weights=True),
+        Cfg(tag="rqb_both", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=40.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=12.0,
+            save_weights=True),
+    ],
+    # RQ-B 的第二支：在 τ_hi=5 下重做「仅 a」这一格。
+    #
+    # 为什么需要：τ=40 的循环是**弱版本**——M2 实测循环只贡献 +0.09，
+    # 结构上标着 recurrent，功能上等于前馈。而 τ=5 时循环贡献 +2.65，
+    # 是唯一「循环动力学确实在起作用」的配置。若 `a·u` 的共振真的需要
+    # 循环耦合，效应应当在 τ=5 下最明显。
+    #
+    # 只跑 a_only 两格（前馈 / 循环）：这是交互效应的分子与分母所在。
+    # b_only 与 both 只在交互为正时才补——先花 1.1 小时拿到判别信号，
+    # 而不是一上来跑 18 次。
+    #
+    # rec_gain=6.75 取自 τ=5 的实测配平区间 [6.53, 6.99]。
+    # 「都断」两格已有：前馈 = tau5_ff（82.32）、循环 = tau5_rnn（84.97）。
+    "rqb_tau5": [
+        Cfg(tag="rqb5_ff_a_only", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=5.0,
+            aug_chan=35, hidden=384, learn_b=False),
+        Cfg(tag="rqb5_rnn_a_only", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="het", tau_lo=1.0, tau_hi=5.0,
+            aug_chan=35, hidden=384, recurrent=True, rec_gain=6.75,
+            learn_b=False, save_weights=True),
+    ],
     # M1 的前馈对照：H0 的每一格都要配一个同基线的前馈，否则测到的是
     # "基线配方的差异"而不是"循环的贡献"。强基线的前馈已有（r10 final，
     # 3 seed 且带 test_pred），只需补弱基线的。

@@ -23,6 +23,10 @@ benchmarks/*.json
 !benchmarks/rnn_diag.json
 !benchmarks/train_shd_m2tau.json
 !benchmarks/train_shd_m2ei.json
+!benchmarks/train_shd_rqb.json
+!benchmarks/rqb_coupling.json
+!benchmarks/train_shd_rqb_tau5.json
+
 
 
 
