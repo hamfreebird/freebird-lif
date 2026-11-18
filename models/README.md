@@ -1,5 +1,14 @@
 # 模型权重
 
+> **2026-11-19 起，两个 SHD 检查点（`shd-lif-ff-2x384.pt`、
+> `shd-adlif-ff-2x384.pt`，各 1.7 MB）不再纳入版本控制**，
+> 并已从 git 历史中剔除（见 PLAN 的变更记录）。理由是权重可由
+> `scripts/train_shd.py` 按 `benchmarks/train_shd_m3.json` 记录的配方逐位重训复现，
+> 而仓库历史里混入 1.38 GB 的 pip 缓存后不得不做一次历史重写。
+> 表里的数字与配方保留，作为可复现的契约；本地已有的文件仍在，
+> 只是不进 git。v1 的两个小产物（`freebird-lif-T4.pt` / `.npz`，各约 160 KB）
+> 被 `tests/test_engine.py` 与 `docs/README-v1.md` 引用，继续入库。
+
 ## 阶段二（SHD）
 
 | 文件 | 模型 | 测试精度 | 参数 | 来源 |

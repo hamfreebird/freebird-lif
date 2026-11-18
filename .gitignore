@@ -26,12 +26,24 @@ benchmarks/*.json
 !benchmarks/train_shd_rqb.json
 !benchmarks/rqb_coupling.json
 !benchmarks/train_shd_rqb_tau5.json
+!benchmarks/bench_nmnist_*.json
+!benchmarks/bench_evtouch_*.json
 
 
 
 
 # 训练产物（检查点由 scripts/export.py 导出到 models/ 后入库）
 runs/
+
+# pip 的临时目录：M0 装 torch 时用过 `--cache-dir .piptmp/cache`，
+# 结果 166 个缓存文件（1.38 GB）被误提交。2026-11-19 重写历史剔除，
+# 此处永久忽略。
+.piptmp/
+
+# 大检查点不入库：1.7 MB × 2 可由脚本重训复现，权重不是结论。
+# 只保留 v1 的小产物（freebird-lif-T4.pt/.npz，各 160 KB），它们被
+# tests/test_engine.py 与 docs/README-v1.md 直接引用。
+models/shd-*.pt
 
 # 工作区记忆（agent 本地笔记，不入库）
 .workbuddy/
