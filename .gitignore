@@ -27,6 +27,7 @@ benchmarks/*.json
 !benchmarks/rqb_coupling.json
 !benchmarks/train_shd_rqb_tau5.json
 !benchmarks/bench_nmnist_*.json
+!benchmarks/v4cal_*.json
 !benchmarks/bench_evtouch_*.json
 
 

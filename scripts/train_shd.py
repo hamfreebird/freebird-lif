@@ -199,7 +199,7 @@ class SHDNet(nn.Module):
         self.norms = nn.ModuleList([_mk_norm(cfg.norm, cfg.hidden)
                                     for _ in range(cfg.n_layers)])
         kw = dict(thr=cfg.thr, dt_ms=cfg.dt_ms, learn_tau=cfg.learn_tau)
-        if cfg.variant == "adlif":
+        if cfg.variant in ("adlif", "atlif"):
             kw.update(learn_a=cfg.learn_a, learn_b=cfg.learn_b)
         self.neurons = nn.ModuleList(
             [build_neuron(cfg.variant, cfg.hidden, tau_ms=cfg.tau_ms, **kw)
@@ -244,6 +244,11 @@ class SHDNet(nn.Module):
         self.out_neuron = (build_neuron(cfg.variant, cfg.n_classes, **kw)
                            if cfg.readout == "sum_s" else None)
 
+    # PCI 的扰动钩子：None 时完全不改变行为（训练路径不受影响）。
+    # 由仪器脚本设置为 {"t": int, "layer": int, "mask": Tensor[hidden], "amp": float}。
+    # 放在类属性而非 __init__ 里，是为了不污染 24 个 Cfg 字段的序列化。
+    perturb: dict | None = None
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b = x.shape[0]
         T = self.cfg.frames or x.shape[1]
@@ -281,6 +286,9 @@ class SHDNet(nn.Module):
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
                     # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
 
+                if (self.perturb is not None and t == self.perturb["t"]
+                        and i == self.perturb["layer"]):
+                    cur = cur + self.perturb["mask"] * self.perturb["amp"]
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 if self.cfg.dropout > 0 and self.training:
@@ -338,6 +346,9 @@ class SHDNet(nn.Module):
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
                     # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
 
+                if (self.perturb is not None and t == self.perturb["t"]
+                        and i == self.perturb["layer"]):
+                    cur = cur + self.perturb["mask"] * self.perturb["amp"]
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 tot[i] += s.mean().item() / T

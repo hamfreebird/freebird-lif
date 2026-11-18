@@ -6,6 +6,7 @@
 
 from .base import SpikingNeuron, decay_from_tau
 from .neurons import ALIF, GLIF, LIF, AdLIF, MCLIF
+from .twocomp import ATLIF, TCLIF
 from .polara import POLARA
 
 REGISTRY = {
@@ -14,10 +15,13 @@ REGISTRY = {
     "adlif": AdLIF,
     "glif": GLIF,
     "mclif": MCLIF,
+    # 阶段四：两隔室
+    "tclif": TCLIF,
+    "atlif": ATLIF,
 }
 
 __all__ = ["SpikingNeuron", "decay_from_tau", "LIF", "ALIF", "AdLIF",
-           "GLIF", "MCLIF", "POLARA", "REGISTRY", "build"]
+           "GLIF", "MCLIF", "TCLIF", "ATLIF", "POLARA", "REGISTRY", "build"]
 
 
 def build(name: str, n: int, **kw) -> SpikingNeuron:

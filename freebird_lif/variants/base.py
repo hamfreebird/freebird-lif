@@ -30,6 +30,10 @@ class SpikingNeuron(nn.Module):
 
     n_state: int = 1
     float_state: int = 1
+    # 胞体膜电位在 state tuple 里的下标。LIF/AdLIF 是 0；
+    # 两隔室变体（TCLIF/ATLIF）的 0 是树突、1 才是胞体。仪器（PCI/ITC）
+    # 需要读胞体，靠这个属性避免按 n_state 猜。
+    soma_index: int = 0
 
     def __init__(self, thr: float = 0.5, alpha: float = 2.0,
                  surrogate: str = "fast_sigmoid", reset: str = "subtract"):
