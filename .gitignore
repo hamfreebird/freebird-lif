@@ -28,6 +28,8 @@ benchmarks/*.json
 !benchmarks/train_shd_rqb_tau5.json
 !benchmarks/bench_nmnist_*.json
 !benchmarks/v4cal_*.json
+!benchmarks/v4m1_*.json
+!benchmarks/train_shd_m1v4.json
 !benchmarks/bench_evtouch_*.json
 
 

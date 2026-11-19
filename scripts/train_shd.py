@@ -732,6 +732,25 @@ GRIDS: dict[str, list[Cfg]] = {
             aug_chan=35, hidden=384, recurrent=True, rec_init="ei_balanced",
             rec_gain=12.0, save_weights=True),
     ],
+    # 阶段四 M1：TC-LIF 单点 + 配对基线。
+    #
+    # 为什么基线必须是**固定 τ**：TC-LIF 没有衰减因子，`tau_ms` 对它无效，
+    # 阶段三的「层内异构 τ」配方在两隔室变体上不适用。若拿异构 τ 的 LIF（83.04）
+    # 直接比，比的是两个不同配方，无法把差异归给神经元。
+    #
+    # τ=40 的选择：TC-LIF 的静息旋转周期由 β1β2 决定（初始 44.4 帧），
+    # 单 τ 的 LIF 取 τ=40 是最接近的「长记忆」对照。另跑 τ=2 作为短记忆下界。
+    "m1v4": [
+        Cfg(tag="v4_tclif", variant="tclif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            save_weights=True),
+        Cfg(tag="v4_lif_t40", variant="lif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", tau_ms=40.0,
+            hidden=384, save_weights=True),
+        Cfg(tag="v4_lif_t2", variant="lif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", tau_ms=2.0,
+            hidden=384, save_weights=True),
+    ],
     # RQ-B：AdLIF 适应电流的机制归因，在**循环结构**下重做。
     #
     # 阶段二只在前馈下做过（m3b：a_only 84.91 / b_only 86.93 / both 86.07 /
