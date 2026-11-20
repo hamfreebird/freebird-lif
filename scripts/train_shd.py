@@ -274,10 +274,19 @@ class SHDNet(nn.Module):
         self.out_neuron = (build_neuron(cfg.variant, cfg.n_classes, **kw)
                            if cfg.readout == "sum_s" else None)
 
-    # PCI 的扰动钩子：None 时完全不改变行为（训练路径不受影响）。
-    # 由仪器脚本设置为 {"t": int, "layer": int, "mask": Tensor[hidden], "amp": float}。
-    # 放在类属性而非 __init__ 里，是为了不污染 24 个 Cfg 字段的序列化。
+    # 扰动钩子：None 时完全不改变行为（训练路径不受影响）。
+    # 支持单个 dict 或 dict 列表，每个事件形如
+    #   {"t": int, "layer": int, "mask": Tensor[hidden], "amp": float}
+    # 列表形式是阶段五 C2 协议需要的：在 t0 扰动高层、在 t0+Δ 给低层加探测脉冲。
+    # 放在类属性而非 __init__ 里，是为了不污染 Cfg 字段的序列化。
     perturb: dict | None = None
+
+    def _perturb_events(self) -> list:
+        """把 `perturb` 归一化成事件列表（dict → 单元素列表）。"""
+        p = self.perturb
+        if p is None:
+            return []
+        return [p] if isinstance(p, dict) else list(p)
 
     def _slow_advance(self, slow, top, b, dev, dt):
         """慢群体前进一步。返回 (slow, 调制电流)。
@@ -335,9 +344,10 @@ class SHDNet(nn.Module):
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
                     # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
 
-                if (self.perturb is not None and t == self.perturb["t"]
-                        and i == self.perturb["layer"]):
-                    cur = cur + self.perturb["mask"] * self.perturb["amp"]
+                if self.perturb is not None:
+                    for ev in self._perturb_events():
+                        if t == ev["t"] and i == ev["layer"]:
+                            cur = cur + ev["mask"] * ev["amp"]
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 if self.cfg.dropout > 0 and self.training:
@@ -399,9 +409,10 @@ class SHDNet(nn.Module):
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
                     # 缩放后再送进神经元，循环项在 u 方程里的系数即为 W_rec 本身
 
-                if (self.perturb is not None and t == self.perturb["t"]
-                        and i == self.perturb["layer"]):
-                    cur = cur + self.perturb["mask"] * self.perturb["amp"]
+                if self.perturb is not None:
+                    for ev in self._perturb_events():
+                        if t == ev["t"] and i == ev["layer"]:
+                            cur = cur + ev["mask"] * ev["amp"]
                 s, states[i] = ne.step(cur, states[i])
                 prev[i] = s
                 tot[i] += s.mean().item() / T

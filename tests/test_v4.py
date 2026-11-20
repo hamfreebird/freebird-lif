@@ -194,3 +194,16 @@ def test_pci_synthetic_battery_passes():
     assert r["pass"], f"效度检验未通过：{[ (k, round(v['pci'], 4)) for k, v in r['battery'].items() ]}"
     # 随机矩阵的复杂度应显著高于结构化矩阵
     assert r["battery"]["random"]["pci"] > 5 * r["battery"]["blob"]["pci"]
+
+
+def test_causal_instruments_self_test():
+    """阶段五 M0 闸门：C2/C3 的指标必须在已知答案上给出设定值。
+
+    玩具系统：有因果时 |M| ≥ 0.10，无因果时 ≤ 0.02；
+    预测：有耦合时 ΔR² ≥ 0.20，无耦合时 |ΔR²| ≤ 0.02。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from causal_v5 import self_test
+
+    r = self_test()
+    assert r["pass"], f"标定未通过：{r['checks']}（coupled M={r['max_M_coupled']}, "
