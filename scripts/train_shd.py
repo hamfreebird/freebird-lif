@@ -46,6 +46,22 @@ OUT = ROOT / "benchmarks"
 N_IN, N_CLS = 700, 20
 
 
+def parse_period_bands(spec: str, n_layers: int) -> list[tuple[float, float]]:
+    """把 "2-12,8-40,30-90" 解析成 [(2,12),(8,40),(30,90)]。
+
+    长度必须等于层数：少一层或多一层都会让「分层」变成静默的错误配置。
+    """
+    if not spec:
+        return []
+    bands = []
+    for part in spec.split(","):
+        lo, hi = part.split("-")
+        bands.append((float(lo), float(hi)))
+    if len(bands) != n_layers:
+        raise ValueError(f"period_bands 给了 {len(bands)} 段，但 n_layers={n_layers}")
+    return bands
+
+
 def _init_ei_balanced(weight: torch.Tensor, ei_ratio: float = 0.8) -> None:
     """H2 的干预：E/I 平衡的循环权重初始化（原地）。
 
@@ -126,6 +142,9 @@ class Cfg:
     intrinsic_het: bool = False
     period_lo: float = 8.0     # 最短内在周期（帧）
     period_hi: float = 80.0    # 最长内在周期（帧）
+    # 逐层周期带（阶段五）："2-12,8-40,30-90" 这样的字符串，长度须等于 n_layers。
+    # 用字符串而不是嵌套元组，是因为它要经 asdict→JSON→Cfg(**config) 往返。
+    period_bands: str = ""
     # 阶段四：独立慢群体（k 个非脉冲泄漏积分单元，读顶层、调制第 0 层）
     slow_k: int = 0            # 0 = 关闭
     slow_tau: float = 100.0    # 慢群体时间常数（帧）
@@ -212,9 +231,18 @@ class SHDNet(nn.Module):
         if cfg.variant in ("tclif", "atlif"):
             kw.update(intrinsic_het=cfg.intrinsic_het,
                       period_lo=cfg.period_lo, period_hi=cfg.period_hi)
+        bands = parse_period_bands(cfg.period_bands, cfg.n_layers)
+
+        def _kw_for(layer: int) -> dict:
+            """逐层覆盖内在周期带；没有 period_bands 时退回全局 period_lo/hi。"""
+            k = dict(kw)
+            if bands:
+                k["period_lo"], k["period_hi"] = bands[layer]
+            return k
+
         self.neurons = nn.ModuleList(
-            [build_neuron(cfg.variant, cfg.hidden, tau_ms=cfg.tau_ms, **kw)
-             for _ in range(cfg.n_layers)])
+            [build_neuron(cfg.variant, cfg.hidden, tau_ms=cfg.tau_ms, **_kw_for(i))
+             for i in range(cfg.n_layers)])
         if cfg.tau_mode == "het":
             # 同一层里 τ 从 tau_lo 到 tau_hi 对数铺开：快神经元抓瞬态、慢神经元
             # 做长积分，等价于一个可学的时间滤波器组。层间再乘 tau_layer_gain，
@@ -223,7 +251,7 @@ class SHDNet(nn.Module):
                                   cfg.hidden)
             self.neurons = nn.ModuleList(
                 [build_neuron(cfg.variant, cfg.hidden,
-                              tau_ms=base * cfg.tau_layer_gain ** i, **kw)
+                              tau_ms=base * cfg.tau_layer_gain ** i, **_kw_for(i))
                  for i in range(cfg.n_layers)])
         elif cfg.tau_mode != "fixed":
             raise ValueError(f"未知 tau_mode {cfg.tau_mode!r}")
@@ -812,6 +840,28 @@ GRIDS: dict[str, list[Cfg]] = {
             hidden=384, save_weights=True),
         Cfg(tag="v4_atlif", variant="atlif", epochs=120, val_mode="all",
             norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            save_weights=True),
+    ],
+    # 阶段五 M1：三层前馈 + 逐层周期带。**没有自顶向下通路**。
+    #
+    # 这一格的作用是分离「分层」与「因果」：如果三层前馈本身就达到阶段四的
+    # 87.93，说明层数/尺度不是瓶颈，阶段五的重心必须转到 C2（调制），
+    # 而不是把「更深」当成「层级因果」。
+    #
+    # 两档：
+    #   bands  层间分离 (6-12 / 18-45 / 60-120)。下限 6 帧是硬约束：
+    #          两隔室要求 |β1β2|<1，而 cosθ = 1 + β1β2/2 ≥ 0.5 ⇒ T ≥ 6 帧。
+    #          所以计划里写的「2 帧」不可实现，实际最快是 82 ms。
+    #   same   三层共享 (2-90)，谱相同、只是更深
+    # 后者是 H5.4 的对照：若两者 C2 无差异，说明「分层」只是装饰。
+    "m1v5": [
+        Cfg(tag="v5_3l_bands", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            n_layers=3, intrinsic_het=True, period_bands="6-12,18-45,60-120",
+            save_weights=True),
+        Cfg(tag="v5_3l_same", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            n_layers=3, intrinsic_het=True, period_bands="6-120,6-120,6-120",
             save_weights=True),
     ],
     # 阶段四 M2c：两个候选机制的正面对比。

@@ -1,0 +1,82 @@
+{
+ "ckpt": "runs/v5_3l_bands_s0.pt",
+ "variant": "lif",
+ "tau_hi": 40.0,
+ "in_scale": 5.0,
+ "itc": {
+  "layer0": {
+   "rate_during": 0.40628090500831604,
+   "rate_after": 0.03902408108115196,
+   "sustain_ratio": 0.0960519694627371,
+   "tau_int": 40.743858337402344,
+   "decode_r2_k30": 0.0,
+   "participation_ratio": 16.635507583618164,
+   "dominant_freq": 0.008,
+   "spont_frames": 125
+  },
+  "layer1": {
+   "rate_during": 0.15478189289569855,
+   "rate_after": 0.11369401216506958,
+   "sustain_ratio": 0.7345433631677029,
+   "tau_int": 42.3055419921875,
+   "decode_r2_k30": 0.0,
+   "participation_ratio": 1.1508257389068604,
+   "dominant_freq": 0.008,
+   "spont_frames": 125
+  },
+  "layer2": {
+   "rate_during": 0.31105467677116394,
+   "rate_after": 0.5221750736236572,
+   "sustain_ratio": 1.6787243935503016,
+   "tau_int": 23.16058349609375,
+   "decode_r2_k30": 0.0,
+   "participation_ratio": 1.4432519674301147,
+   "dominant_freq": 0.016,
+   "spont_frames": 125
+  }
+ },
+ "gsa": {
+  "alphas": [
+   0.25,
+   0.5,
+   1.0,
+   2.0,
+   4.0
+  ],
+  "grad_norm": [
+   0.30996769666671753,
+   0.4946887493133545,
+   0.6141010522842407,
+   0.7538860440254211,
+   1.014043927192688
+  ],
+  "beta": 0.4027686119833861,
+  "ratio_4_1": 1.6512655749746723
+ },
+ "pci": {
+  "pci_mean": 0.014875534970841875,
+  "pci_sd": 0.0007247007538386017,
+  "pci_baseline": 0.0,
+  "pci_delta": 0.014875534970841875,
+  "density_mean": 0.09895833333333331,
+  "trials": 20,
+  "threshold": 0.05,
+  "thresh_mode": "abs",
+  "n_neurons": 384,
+  "t_resp": 60,
+  "amp": 10.0
+ },
+ "phi": {
+  "phi_g": 10.639852124252648,
+  "k": 4,
+  "T": 100,
+  "n_neurons": 384,
+  "spectral_radius": 1.0423563310925805,
+  "group_sizes": [
+   17,
+   6,
+   9,
+   352
+  ]
+ }
+}
