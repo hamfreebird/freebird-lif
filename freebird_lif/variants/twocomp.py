@@ -53,6 +53,11 @@ def _logit(p: float) -> float:
     return math.log(p / (1.0 - p))
 
 
+def _logit_tensor(p: Tensor) -> Tensor:
+    """张量版 logit，用于逐神经元异构初始化。"""
+    return torch.log(p.clamp(1e-4, 1 - 1e-4) / (1.0 - p.clamp(1e-4, 1 - 1e-4)))
+
+
 class TCLIF(SpikingNeuron):
     """两隔室 LIF（TC-LIF）。状态：`(U^D, U^S, s_prev)`。
 
@@ -66,7 +71,9 @@ class TCLIF(SpikingNeuron):
 
     def __init__(self, n: int, tau_ms=2.0, dt_ms: float = 1.0,
                  learn_tau: bool = True, beta1: float = 0.1, beta2: float = 0.2,
-                 gamma: float = 0.5, learn_gate: bool | None = None, **kw):
+                 gamma: float = 0.5, learn_gate: bool | None = None,
+                 intrinsic_het: bool = False, period_lo: float = 8.0,
+                 period_hi: float = 80.0, **kw):
         """`tau_ms`/`dt_ms`/`learn_tau` 仅为接口兼容而接受，**在本变体中被忽略**。
 
         TC-LIF 没有衰减因子，时间尺度由 β1·β2 决定。把这三个参数留着是为了让
@@ -76,10 +83,23 @@ class TCLIF(SpikingNeuron):
         super().__init__(**kw)
         if learn_gate is None:
             learn_gate = learn_tau
-        self.c1 = nn.Parameter(torch.full((n,), _logit(beta1)),
-                               requires_grad=learn_gate)
-        self.c2 = nn.Parameter(torch.full((n,), _logit(beta2)),
-                               requires_grad=learn_gate)
+        if intrinsic_het:
+            # 逐神经元的**内在周期谱**：T 在 [period_lo, period_hi] 对数铺开，
+            # 再由 cosθ = 1 + β1β2/2 反解 |β1β2| = 2(1-cos(2π/T))。
+            # 取 β1=-β、β2=+β（β=sqrt(|β1β2|)），既满足原文的反号约束，
+            # 又让 det=1 的中性稳定性质逐神经元保留——只是各自的旋转速度不同。
+            # 这是「补快的那一端」：同构时所有神经元都只有一个 44 帧周期，
+            # 无法表示短于 ~6 帧的瞬态。
+            periods = torch.logspace(math.log10(period_lo), math.log10(period_hi), n)
+            mag = torch.sqrt(torch.clamp(
+                2.0 * (1.0 - torch.cos(2.0 * math.pi / periods)), 1e-6, 0.99))
+            c1_init = _logit_tensor(mag)
+            c2_init = _logit_tensor(mag)
+        else:
+            c1_init = torch.full((n,), _logit(beta1))
+            c2_init = torch.full((n,), _logit(beta2))
+        self.c1 = nn.Parameter(c1_init, requires_grad=learn_gate)
+        self.c2 = nn.Parameter(c2_init, requires_grad=learn_gate)
         self.gamma = nn.Parameter(torch.full((n,), float(gamma)),
                                   requires_grad=learn_gate)
 
@@ -120,6 +140,13 @@ class TCLIF(SpikingNeuron):
         return 14.0
 
     # ---- 分析用（不进前向） -----------------------------------------------
+
+    def period_spectrum(self) -> Tensor:
+        """逐神经元的内在周期（帧）。同构时全为同一个值。"""
+        with torch.no_grad():
+            prod = (self.beta1 * self.beta2).clamp(-0.999, -1e-6)
+            theta = torch.acos((1.0 + prod / 2.0).clamp(-0.999, 0.999))
+        return 2.0 * math.pi / theta
 
     def linear_spectrum(self) -> dict:
         """无输入、无发放时线性化矩阵的谱。

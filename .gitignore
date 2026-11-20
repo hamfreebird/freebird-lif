@@ -30,6 +30,9 @@ benchmarks/*.json
 !benchmarks/v4cal_*.json
 !benchmarks/v4m1_*.json
 !benchmarks/v4m2_*.json
+!benchmarks/v4m3_*.json
+!benchmarks/m2c_options.md
+!benchmarks/train_shd_m3v4.json
 !benchmarks/m2v4*.json
 !benchmarks/m2v4.md
 !benchmarks/train_shd_m2v4*.json

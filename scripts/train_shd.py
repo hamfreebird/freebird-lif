@@ -122,6 +122,14 @@ class Cfg:
     rate_target: float = 0.0   # 发放率正则的目标（0 表示关闭）
     rate_lambda: float = 0.0   # 发放率正则权重
     save_weights: bool = False # 训练结束保存 state_dict 到 runs/
+    # 阶段四：两隔室变体的内在周期谱（逐神经元异构）
+    intrinsic_het: bool = False
+    period_lo: float = 8.0     # 最短内在周期（帧）
+    period_hi: float = 80.0    # 最长内在周期（帧）
+    # 阶段四：独立慢群体（k 个非脉冲泄漏积分单元，读顶层、调制第 0 层）
+    slow_k: int = 0            # 0 = 关闭
+    slow_tau: float = 100.0    # 慢群体时间常数（帧）
+    slow_gain: float = 1.0     # 反馈电流增益
     learn_a: bool = True       # AdLIF：膜电位驱动的适应电流是否可学
     learn_b: bool = True       # AdLIF：发放驱动的适应电流是否可学
     label_smooth: float = 0.0
@@ -201,6 +209,9 @@ class SHDNet(nn.Module):
         kw = dict(thr=cfg.thr, dt_ms=cfg.dt_ms, learn_tau=cfg.learn_tau)
         if cfg.variant in ("adlif", "atlif"):
             kw.update(learn_a=cfg.learn_a, learn_b=cfg.learn_b)
+        if cfg.variant in ("tclif", "atlif"):
+            kw.update(intrinsic_het=cfg.intrinsic_het,
+                      period_lo=cfg.period_lo, period_hi=cfg.period_hi)
         self.neurons = nn.ModuleList(
             [build_neuron(cfg.variant, cfg.hidden, tau_ms=cfg.tau_ms, **kw)
              for _ in range(cfg.n_layers)])
@@ -239,6 +250,25 @@ class SHDNet(nn.Module):
                     raise ValueError(
                         f"变体 {cfg.variant} 的输入不是 (1-α)·x 形式，rec_scale 无定义；"
                         f"请关掉 rec_scale 或先单独标定该变体的循环增益")
+        # 独立慢群体（阶段四选项 3）：k 个非脉冲泄漏积分单元，读顶层脉冲、
+        # 以低秩投影调制第 0 层的输入电流。默认 slow_k=0 时完全不建模块，
+        # 行为与之前逐位一致。
+        #
+        # 为什么用**非脉冲**单元：慢单元在 τ=100 帧下发放率极低（<1 Hz 等效），
+        # 用脉冲会带来极大的方差而信息量很少。这里先测「慢群体 + 反馈」这个
+        # 结构假设；把它换成脉冲群体是阶段五的正式任务（那时还要做层级）。
+        self.slow_in = None
+        self.slow_out = None
+        self.slow_decay = 1.0
+        if cfg.slow_k > 0:
+            self.slow_in = nn.Linear(cfg.hidden, cfg.slow_k, bias=False)
+            self.slow_out = nn.Linear(cfg.slow_k, cfg.hidden, bias=False)
+            with torch.no_grad():
+                self.slow_in.weight.normal_(0.0, 1.0 / math.sqrt(cfg.hidden))
+                # 反馈电流初始要小：太大一上来就把第 0 层推向饱和
+                self.slow_out.weight.normal_(0.0, 0.3 / math.sqrt(cfg.slow_k))
+            self.slow_decay = math.exp(-1.0 / max(cfg.slow_tau, 1e-3))
+
         self.fc_out = nn.Linear(cfg.hidden, cfg.n_classes)
         # sum_s 读出需要一个会发放的输出层；其余读出用非脉冲积分器
         self.out_neuron = (build_neuron(cfg.variant, cfg.n_classes, **kw)
@@ -248,6 +278,21 @@ class SHDNet(nn.Module):
     # 由仪器脚本设置为 {"t": int, "layer": int, "mask": Tensor[hidden], "amp": float}。
     # 放在类属性而非 __init__ 里，是为了不污染 24 个 Cfg 字段的序列化。
     perturb: dict | None = None
+
+    def _slow_advance(self, slow, top, b, dev, dt):
+        """慢群体前进一步。返回 (slow, 调制电流)。
+
+        `top` 是**上一时刻**顶层脉冲；t=0 时为 None，不更新。
+        两条前向路径（forward / spike_rates）都必须调这一个函数，
+        否则发放率正则测到的动力学与真正训练的不是同一个。
+        """
+        if self.slow_in is None or top is None:
+            return slow, None
+        if slow is None:
+            slow = torch.zeros(b, self.cfg.slow_k, device=dev, dtype=dt)
+        slow = (self.slow_decay * slow
+                + (1.0 - self.slow_decay) * torch.tanh(self.slow_in(top)))
+        return slow, self.cfg.slow_gain * self.slow_out(slow)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         b = x.shape[0]
@@ -272,6 +317,7 @@ class SHDNet(nn.Module):
             h = h * mask / (1.0 - self.cfg.in_dropout)
 
         prev = [None] * self.cfg.n_layers   # 上一步各层脉冲，供循环连接用
+        slow = None                          # 慢群体状态 [B, slow_k]
         # H1：见构造函数注释。每层一个 [N] 向量，随 α 的当前值现算。
         rec_sc = ([ne.input_scale() for ne in self.neurons]
                   if (self.cfg.recurrent and self.cfg.rec_scale) else None)
@@ -279,8 +325,11 @@ class SHDNet(nn.Module):
         rates = []
         for t in range(T):
             a = h[:, t]
+            slow, slow_mod = self._slow_advance(slow, prev[-1], b, dev, dt)
             for i, (fc, nrm, ne) in enumerate(zip(self.fcs, self.norms, self.neurons)):
                 cur = nrm(fc(a))
+                if i == 0 and slow_mod is not None:
+                    cur = cur + slow_mod
                 if self.cfg.recurrent and prev[i] is not None:
                     rec = self.recs[i](prev[i])
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
@@ -335,12 +384,16 @@ class SHDNet(nn.Module):
         tot = [0.0] * self.cfg.n_layers
         h = x[:, :T] * self.cfg.in_scale
         prev = [None] * self.cfg.n_layers
+        slow = None
         rec_sc = ([ne.input_scale() for ne in self.neurons]
                   if (self.cfg.recurrent and self.cfg.rec_scale) else None)
         for t in range(T):
             a = h[:, t]
+            slow, slow_mod = self._slow_advance(slow, prev[-1], b, dev, dt)
             for i, (fc, nrm, ne) in enumerate(zip(self.fcs, self.norms, self.neurons)):
                 cur = nrm(fc(a))
+                if i == 0 and slow_mod is not None:
+                    cur = cur + slow_mod
                 if self.cfg.recurrent and prev[i] is not None:
                     rec = self.recs[i](prev[i])
                     cur = cur + (rec if rec_sc is None else rec * rec_sc[i])
@@ -749,6 +802,34 @@ GRIDS: dict[str, list[Cfg]] = {
         Cfg(tag="v4_atlif", variant="atlif", epochs=120, val_mode="all",
             norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
             save_weights=True),
+    ],
+    # 阶段四 M2c：两个候选机制的正面对比。
+    #
+    # 选项 1（intrinsic_het）：把两隔室的**内在周期**做成逐神经元谱（8→80 帧），
+    #   给网络补上「快」的那一端。M1/M2 里所有神经元共用一个 44 帧周期，
+    #   短于 ~6 帧的瞬态无从表示——这是 2.8 点精度缺口最可能的来源。
+    # 选项 3（slow_k）：外挂一个 k=64 的**非脉冲慢群体**，读顶层脉冲、
+    #   以低秩投影调制第 0 层。这是阶段五「层级因果结构」的最小版本：
+    #   慢变量不是长在同一个神经元里，而是独立成一个群体。
+    #
+    # 两档都跑 TCLIF 与 ATLIF，另加 LIF τ=40 对照——若慢群体也能救 LIF，
+    # 那它就不是两隔室专属的补丁。
+    "m3v4": [
+        Cfg(tag="v4_tclif_het", variant="tclif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            intrinsic_het=True, save_weights=True),
+        Cfg(tag="v4_atlif_het", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            intrinsic_het=True, save_weights=True),
+        Cfg(tag="v4_tclif_slow", variant="tclif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            slow_k=64, slow_tau=100.0, save_weights=True),
+        Cfg(tag="v4_atlif_slow", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            slow_k=64, slow_tau=100.0, save_weights=True),
+        Cfg(tag="v4_lif_slow", variant="lif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", tau_ms=40.0,
+            hidden=384, slow_k=64, slow_tau=100.0, save_weights=True),
     ],
     # 阶段四 M2b（探针，1 seed，不作结论）：饱和是不是 GSA 塌缩的可修复原因？
     #

@@ -13,7 +13,12 @@ from __future__ import annotations
 
 import torch
 
+import sys
+from pathlib import Path
+
 from freebird_lif.variants import build
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 
 def _run(ne, x, n_steps=None):
@@ -108,3 +113,67 @@ def test_state_counts_are_declared_correctly():
     # 胞体下标必须指向一个浮点状态，而不是二值的 s_prev
     assert tc.soma_index == 1 and at.soma_index == 1
     assert torch.allclose(st_tc[tc.soma_index], torch.zeros(1, 3))
+
+
+# ---------------------------------------------------------------------------
+# 阶段四的两个结构选项（M2b）
+# ---------------------------------------------------------------------------
+
+def _model(**kw):
+    from train_shd import Cfg, SHDNet
+    torch.manual_seed(0)
+    m = SHDNet(Cfg(variant=kw.pop("variant", "tclif"), hidden=32,
+                   n_in=40, n_classes=4, **kw))
+    return m.eval()
+
+
+def test_intrinsic_het_spans_the_period_range():
+    """异构内在周期应按对数铺开覆盖 [lo, hi]，且 det=1 的性质逐神经元保留。"""
+    ne = build("tclif", 16, intrinsic_het=True, period_lo=8.0, period_hi=80.0)
+    per = ne.period_spectrum()
+    assert abs(float(per.min()) - 8.0) < 0.2, f"最短周期应≈8，实际 {float(per.min()):.2f}"
+    assert abs(float(per.max()) - 80.0) < 2.0, f"最长周期应≈80，实际 {float(per.max()):.2f}"
+    # β1β2 全部落在 (-1,0)，即每个神经元都还是中性稳定的旋转
+    prod = (ne.beta1 * ne.beta2).detach()
+    assert bool((prod < 0).all()) and bool((prod > -1).all())
+
+
+def test_slow_k_zero_is_a_noop():
+    """slow_k=0 时不许改变任何行为（默认路径必须与之前逐位一致）。"""
+    x = (torch.rand(2, 12, 40) < 0.15).float()
+    a = _model(slow_k=0)
+    b = _model(slow_k=0)
+    assert torch.equal(a(x), b(x)), "同 seed 的两个实例应逐位一致"
+    # 建了慢群体就应当有额外参数，且输出不同
+    c = _model(slow_k=16)
+    assert sum(p.numel() for p in c.parameters()) > sum(p.numel() for p in a.parameters())
+    assert not torch.equal(a(x), c(x))
+
+
+def test_slow_rates_match_forward():
+    """spike_rates 与 forward 必须走同一套动力学。
+
+    两条循环是复制出来的（历史原因），慢群体若只加在 forward 里，
+    发放率正则测到的就不是真实训练的动力学。这条测试把两者钉在一起。
+    """
+    m = _model(slow_k=16)
+    x = (torch.rand(3, 20, 40) < 0.2).float()
+    rates_api = m.spike_rates(x)
+
+    captured = [[] for _ in m.neurons]
+    orig = [ne.step for ne in m.neurons]
+    for i, ne in enumerate(m.neurons):
+        def step(xx, st, _i=i, _o=orig[i]):
+            s, ns = _o(xx, st)
+            captured[_i].append(s.detach())
+            return s, ns
+        ne.step = step
+    try:
+        with torch.no_grad():
+            m(x)
+    finally:
+        for ne, o in zip(m.neurons, orig):
+            ne.step = o
+    for i, seq in enumerate(captured):
+        r = torch.stack(seq, dim=1).mean().item()
+        assert abs(r - rates_api[i]) < 1e-5, f"第 {i} 层发放率不一致：{r} vs {rates_api[i]}"
