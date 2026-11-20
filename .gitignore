@@ -29,6 +29,10 @@ benchmarks/*.json
 !benchmarks/bench_nmnist_*.json
 !benchmarks/v4cal_*.json
 !benchmarks/v4m1_*.json
+!benchmarks/v4m2_*.json
+!benchmarks/m2v4*.json
+!benchmarks/m2v4.md
+!benchmarks/train_shd_m2v4*.json
 !benchmarks/train_shd_m1v4.json
 !benchmarks/bench_evtouch_*.json
 

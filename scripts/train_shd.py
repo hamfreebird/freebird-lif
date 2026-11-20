@@ -732,6 +732,39 @@ GRIDS: dict[str, list[Cfg]] = {
             aug_chan=35, hidden=384, recurrent=True, rec_init="ei_balanced",
             rec_gain=12.0, save_weights=True),
     ],
+    # 阶段四 M2：2×2 消融（适应电流 × 两隔室），固定 τ=40。
+    #
+    # 四个格子：
+    #   单隔室 + 无适应 = v4_lif_t40（M1 已有，74.32）
+    #   单隔室 + 适应   = v4_adlif_t40（本轮）
+    #   两隔室 + 无适应 = v4_tclif（M1 已有，80.26）
+    #   两隔室 + 适应   = v4_atlif（本轮）
+    #
+    # 为什么全部固定 τ=40：TC-LIF 忽略 tau_ms，异构 τ 的配方在两隔室上不适用。
+    # 四个格子必须同配方，否则交互效应里混进配方差异。
+    "m2v4": [
+        Cfg(tag="v4_adlif_t40", variant="adlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", tau_ms=40.0,
+            hidden=384, save_weights=True),
+        Cfg(tag="v4_atlif", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            save_weights=True),
+    ],
+    # 阶段四 M2b（探针，1 seed，不作结论）：饱和是不是 GSA 塌缩的可修复原因？
+    #
+    # AT-LIF 撤输入后仍以 0.415 的发放率活动，胞体长期在阈值之上——
+    # 这正是 β=0.22 的直接解释。发放率正则直接针对这个症状：
+    # 它把平均发放率往 `rate_target` 拉，等价于一个 homeostatic 阈值。
+    # 若加上正则后 β 回到 [0.5,1.5]，说明 GSA 的失败是工作点问题而非结构问题；
+    # 若 β 不动，说明两隔室本身就把幅度信息转成了直流偏置。
+    "m2v4b": [
+        Cfg(tag="v4_atlif_reg", variant="atlif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            rate_target=0.15, rate_lambda=2.0, save_weights=True),
+        Cfg(tag="v4_tclif_reg", variant="tclif", epochs=120, val_mode="all",
+            norm="none", in_scale=5.0, tau_mode="fixed", hidden=384,
+            rate_target=0.15, rate_lambda=2.0, save_weights=True),
+    ],
     # 阶段四 M1：TC-LIF 单点 + 配对基线。
     #
     # 为什么基线必须是**固定 τ**：TC-LIF 没有衰减因子，`tau_ms` 对它无效，
