@@ -177,3 +177,20 @@ def test_slow_rates_match_forward():
     for i, seq in enumerate(captured):
         r = torch.stack(seq, dim=1).mean().item()
         assert abs(r - rates_api[i]) < 1e-5, f"第 {i} 层发放率不一致：{r} vs {rates_api[i]}"
+
+
+def test_pci_synthetic_battery_passes():
+    """M3 的效度检验：同密度下 PCI 必须把「有结构」与「随机」分开。
+
+    这条测试是给指标本身设的闸门：如果哪天改了 LZ 或归一化，
+    导致结构化矩阵与随机矩阵不可分，这里会先失败。
+    """
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+    from instruments_v4 import pci_synthetic_battery, lz76, pci_score
+    import numpy as np
+
+    assert lz76("0" * 1000) == 2, "全零串的 LZ76 应为 2"
+    r = pci_synthetic_battery()
+    assert r["pass"], f"效度检验未通过：{[ (k, round(v['pci'], 4)) for k, v in r['battery'].items() ]}"
+    # 随机矩阵的复杂度应显著高于结构化矩阵
+    assert r["battery"]["random"]["pci"] > 5 * r["battery"]["blob"]["pci"]

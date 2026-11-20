@@ -1,0 +1,16 @@
+{
+ "ckpt": "runs/v4_tclif_het_s0.pt",
+ "variant": "lif",
+ "tau_hi": 40.0,
+ "in_scale": 5.0,
+ "pci_matched": {
+  "pci_matched": 0.36829793083028783,
+  "pci_matched_sd": 0.02482613790791173,
+  "target_density": 0.1,
+  "pci_fixed_thresh": 0.030065563281447848,
+  "density_fixed_thresh": 0.09750434027777778,
+  "null_z": -14.787344774376592,
+  "trials": 20,
+  "n_null": 5
+ }
+}

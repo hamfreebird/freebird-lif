@@ -1,0 +1,16 @@
+{
+ "ckpt": "runs/v4_adlif_t40_s0.pt",
+ "variant": "lif",
+ "tau_hi": 40.0,
+ "in_scale": 5.0,
+ "pci_matched": {
+  "pci_matched": 0.15761395739757714,
+  "pci_matched_sd": 0.021837151707388758,
+  "target_density": 0.1,
+  "pci_fixed_thresh": 0.03383948335861704,
+  "density_fixed_thresh": 0.07276909722222222,
+  "null_z": -52.49892169760788,
+  "trials": 20,
+  "n_null": 5
+ }
+}

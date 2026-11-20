@@ -1,0 +1,16 @@
+{
+ "ckpt": "runs/v4_atlif_s0.pt",
+ "variant": "lif",
+ "tau_hi": 40.0,
+ "in_scale": 5.0,
+ "pci_matched": {
+  "pci_matched": 0.24819210506656453,
+  "pci_matched_sd": 0.020641470462063074,
+  "target_density": 0.1,
+  "pci_fixed_thresh": 0.05406140510544859,
+  "density_fixed_thresh": 0.0947829861111111,
+  "null_z": -30.507106237887353,
+  "trials": 20,
+  "n_null": 5
+ }
+}

@@ -1,0 +1,16 @@
+{
+ "ckpt": "runs/v4_lif_t40_s0.pt",
+ "variant": "lif",
+ "tau_hi": 40.0,
+ "in_scale": 5.0,
+ "pci_matched": {
+  "pci_matched": 0.15921004810540074,
+  "pci_matched_sd": 0.01917385966200156,
+  "target_density": 0.1,
+  "pci_fixed_thresh": 0.032518611331607813,
+  "density_fixed_thresh": 0.04258029513888889,
+  "null_z": -47.56586803739114,
+  "trials": 20,
+  "n_null": 5
+ }
+}

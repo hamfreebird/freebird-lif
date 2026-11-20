@@ -370,6 +370,129 @@ def pci(model: SHDNet, x: torch.Tensor, t0: int = 20, t_resp: int = 60,
             "n_neurons": N, "t_resp": t_resp, "amp": amp}
 
 
+@torch.no_grad()
+def pci_matched(model: SHDNet, x: torch.Tensor, t0: int = 20, t_resp: int = 60,
+                frac: float = 0.10, amp: float = 10.0, trials: int = 20,
+                target_density: float = 0.10, n_null: int = 5,
+                n_time: int = 30, n_groups: int = 96,
+                seed: int = 0) -> dict:
+    """**密度匹配**的 PCI + 置换零模型。
+
+    为什么要密度匹配：M2c 里慢群体的 PCI 0.157 完全由响应密度 0.72 撑起来，
+    与「整合」无关。只要阈值固定，不同架构的响应密度天然不同（0.099 vs 0.732），
+    PCI 就成了密度的单调函数。这里改为**按分位数取阈值**，强制每个配置的
+    二值矩阵密度都等于 `target_density`，再比 LZ 复杂度。
+
+    零模型：把二值矩阵原地打乱（保持 1 的个数不变），重算 LZ。
+    若观测值落在零分布内（|z| < 2），说明「结构」与同密度的随机矩阵没有区别，
+    这个 PCI 就没有解释力。
+
+    计算取舍：LZ 在 23k 位上每次约 3 秒，20 次扰动 × 21 个置换要 20 分钟/模型。
+    这里把响应矩阵**粗粒度**到 `n_time × n_groups`（默认 30×96，即时间 2 帧合并、
+    每 4 个神经元合并）再算，代价约 0.3 秒/次。粗粒度对所有配置一致，
+    不改变组间比较的方向；但它会抹掉细粒度结构，报告里必须写明。
+
+    返回：PCI（密度匹配后）、z、以及未匹配的原始 PCI 供对照。
+    """
+    g = torch.Generator().manual_seed(seed)
+    N = model.cfg.hidden
+
+    def _traj(perturb):
+        model.perturb = perturb
+        try:
+            soma, _ = trace(model, x)
+        finally:
+            model.perturb = None
+        return soma[0]
+
+    base = _traj(None)
+    denom = base[:, :t0].std(dim=1, keepdim=True).clamp_min(1e-6)
+
+    pcis, pcis_fixed, dens_fixed, zs = [], [], [], []
+    for _ in range(trials):
+        mask = torch.zeros(N)
+        idx = torch.randperm(N, generator=g)[: max(1, int(N * frac))]
+        mask[idx] = 1.0
+        s0 = _traj({"t": t0, "layer": 0, "mask": mask, "amp": amp})
+        # 先对 batch 取均值：否则 LZ 会在 32×60×384 = 73 万位上跑，慢 30 倍以上。
+        # 这一步也把「跨样本一致性」纳入了响应强度：只有多数样本都响应的位置才算强。
+        diff = ((s0[:, t0:t0 + t_resp] - base[:, t0:t0 + t_resp])
+                .abs() / denom).mean(dim=0).numpy()          # [T_resp, N]
+        pcis_fixed.append(pci_score(diff > 0.05))
+        dens_fixed.append(float((diff > 0.05).mean()))
+        # 粗粒度：时间与神经元都做块平均，保证尺寸可整除
+        T_resp, N_neur = diff.shape
+        bt, bn = T_resp // n_time, N_neur // n_groups
+        coarse = diff[:n_time * bt, :n_groups * bn].reshape(
+            n_time, bt, n_groups, bn).mean(axis=(1, 3))
+        # 密度匹配：按分位数取阈值
+        thr = float(np.quantile(coarse, 1.0 - target_density))
+        binm = coarse > thr
+        obs = pci_score(binm)
+        pcis.append(obs)
+        # 置换零模型
+        flat = binm.reshape(-1).copy()
+        null = []
+        rng = np.random.default_rng(seed + _)
+        for _j in range(n_null):
+            rng.shuffle(flat)
+            null.append(pci_score(flat.reshape(binm.shape)))
+        null = np.asarray(null)
+        zs.append(float((obs - null.mean()) / max(null.std(), 1e-9)))
+    return {"pci_matched": float(np.mean(pcis)),
+            "pci_matched_sd": float(np.std(pcis)),
+            "target_density": target_density,
+            "pci_fixed_thresh": float(np.mean(pcis_fixed)),
+            "density_fixed_thresh": float(np.mean(dens_fixed)),
+            "null_z": float(np.mean(zs)),
+            "trials": trials, "n_null": n_null}
+
+
+def pci_synthetic_battery(target_density: float = 0.10, seed: int = 0,
+                          n_time: int = 30, n_groups: int = 96) -> dict:
+    """metric-level 效度检验：同密度、同分辨率下，PCI 能否把「结构」与「随机」分开。
+
+    分辨率必须与 pci_matched 一致（默认 30×96），否则两边的归一化不可比——
+    第一版在 60×384 上算，模型那边在 30×96 上算，等于拿两把尺子。
+
+    四种**按密度直接构造**的矩阵（2304→288 个 1）：
+      sync   3 个整行全亮（全局同步、时间上完全刻板）
+      blob   12×24 的连续块（局部、无传播）
+      wave   宽度 10 的斜带（沿空间传播的时空结构）
+      random 同密度均匀随机
+
+    判据：random > wave > max(blob, sync)，且 random − max(blob, sync) > 0.10。
+    **不要求**把 blob 与 sync 分开——两者都是「刻板响应」，
+    指标只需要识别「有结构 vs 无结构」。
+    """
+    rng = np.random.default_rng(seed)
+    T, N = n_time, n_groups
+    n_on = int(round(T * N * target_density))      # 288
+
+    sync = np.zeros((T, N), bool)
+    sync[np.linspace(0, T - 1, n_on // N, dtype=int), :] = True
+
+    blob = np.zeros((T, N), bool)
+    blob[6:6 + 12, 30:54] = True                   # 12×24 = 288
+
+    wave = np.zeros((T, N), bool)
+    center = (np.arange(T) * 3 + 20) % N
+    nn = np.arange(N)[None, :]
+    wave = (np.abs(((nn - center[:, None] + N // 2) % N) - N // 2) < 5)
+
+    flat = np.zeros(T * N, bool)
+    flat[rng.choice(T * N, n_on, replace=False)] = True
+    rand = flat.reshape(T, N)
+
+    mats = {"sync": sync, "blob": blob, "wave": wave, "random": rand}
+    out = {k: {"pci": pci_score(m), "density": float(m.mean())} for k, m in mats.items()}
+    floor = max(out["blob"]["pci"], out["sync"]["pci"])
+    ok = (out["random"]["pci"] > out["wave"]["pci"] > floor
+          and out["random"]["pci"] - floor > 0.10)
+    return {"battery": out, "pass": bool(ok),
+            "target_density": target_density, "shape": [T, N]}
+
+
 # ---------------------------------------------------------------------------
 # Φ_G
 # ---------------------------------------------------------------------------
@@ -499,9 +622,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     # 允许 `... sanity` 与 `--what sanity` 两种写法
     ap.add_argument("command", nargs="?", default=None,
-                    choices=["sanity", "itc", "gsa", "pci", "phi", "all"])
+                    choices=["sanity", "itc", "gsa", "pci", "pci2", "phi", "all"])
     ap.add_argument("--what", default="sanity",
-                    choices=["sanity", "itc", "gsa", "pci", "phi", "all"])
+                    choices=["sanity", "itc", "gsa", "pci", "pci2", "phi", "all"])
     ap.add_argument("--ckpt", default=None)
     ap.add_argument("--variant", default="lif")
     ap.add_argument("--hidden", type=int, default=384)
@@ -512,6 +635,8 @@ def main() -> int:
     ap.add_argument("--trials", type=int, default=20)
     ap.add_argument("--abs-thresh", type=float, default=0.05,
                     help="膜电位移动的绝对阈值（默认 0.05 = 10% 阈值）；设为负则用 sigma 模式")
+    ap.add_argument("--target-density", type=float, default=0.10,
+                    help="pci2 的密度匹配目标")
     ap.add_argument("--out", default=None)
     args = ap.parse_args()
     if args.command:
@@ -532,6 +657,9 @@ def main() -> int:
         res["itc"] = itc(model, x)
     if args.what in ("gsa", "all"):
         res["gsa"] = gsa(model, x, y)
+    if args.what == "pci2":
+        res["pci_matched"] = pci_matched(model, x, amp=args.amp,
+                                         target_density=args.target_density)
     if args.what in ("pci", "all"):
         res["pci"] = pci(model, x, amp=args.amp, trials=args.trials,
                          abs_thresh=(None if args.abs_thresh < 0 else args.abs_thresh))
